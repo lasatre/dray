@@ -9,6 +9,7 @@ mod drive;
 mod index;
 mod model;
 mod pointer;
+mod theme;
 
 fn main() -> eframe::Result {
     let paths = config::Paths::new().expect("could not create config/data directories");

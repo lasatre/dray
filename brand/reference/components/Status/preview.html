@@ -1,0 +1,14 @@
+<!-- @dsCard group="Feedback" height=88 subtitle="Word plus icon, never color alone" -->
+<!doctype html>
+<html data-theme="light"><head><meta charset="utf-8"><link rel="stylesheet" href="../../../tokens.css">
+<style>
+body{margin:0;padding:var(--space-4);background:var(--surface);display:flex;gap:var(--space-2);flex-wrap:wrap;font-family:var(--font-ui)}
+.s{display:inline-flex;align-items:center;gap:var(--space-1);height:24px;padding:0 var(--space-3) 0 var(--space-2);border:1px solid currentColor;border-radius:var(--radius-sm) var(--radius-full) var(--radius-full) var(--radius-sm);background:var(--surface-raised);font:600 12px/16px var(--font-ui)}
+.s svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.ok{color:var(--success)}.in{color:var(--info)}.wa{color:var(--warning)}.er{color:var(--danger)}
+</style></head><body>
+<span class="s ok"><svg viewBox="0 0 12 12"><path d="M2 6.5l2.5 2.5L10 3.5"/></svg>Synced</span>
+<span class="s in"><svg viewBox="0 0 12 12"><path d="M10 6a4 4 0 1 1-1.2-2.9M10 2v2.5H7.5"/></svg>Syncing</span>
+<span class="s wa"><svg viewBox="0 0 12 12"><path d="M2 8.5a5 5 0 0 1 8 0M6 10.5v.01M1.5 1.5l9 9"/></svg>Offline</span>
+<span class="s er"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6"/></svg>Failed</span>
+</body></html>

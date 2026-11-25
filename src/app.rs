@@ -3,7 +3,8 @@ use crate::config::{ClientCreds, Paths, Settings};
 use crate::index::{Index, Query, Roots};
 use crate::model::{DFile, Kind, SharedDrive};
 use crate::pointer::PointerProbe;
-use eframe::egui::{self, Align, Color32, Id, Key, Layout, Modifiers, RichText, Sense};
+use crate::theme;
+use eframe::egui::{self, Align, Id, Key, Layout, Modifiers, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -188,19 +189,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: Paths) -> anyhow::Result<App> {
         let ctx = cc.egui_ctx.clone();
-        ctx.all_styles_mut(|s| {
-            s.interaction.selectable_labels = false;
-            s.spacing.item_spacing = egui::vec2(8.0, 5.0);
-            s.spacing.button_padding = egui::vec2(8.0, 4.0);
-            for (style, font) in s.text_styles.iter_mut() {
-                font.size = match style {
-                    egui::TextStyle::Heading => 20.0,
-                    egui::TextStyle::Small => 11.0,
-                    egui::TextStyle::Monospace => 13.0,
-                    _ => 14.0,
-                };
-            }
-        });
+        theme::install(&ctx);
         let settings = Settings::load(&paths);
         match settings.dark_mode {
             Some(true) => ctx.set_theme(egui::Theme::Dark),
@@ -1624,7 +1613,7 @@ impl App {
                         }
                         ui.add(egui::Label::new(name).truncate());
                         if f.starred {
-                            ui.label(RichText::new("★").color(Color32::from_rgb(240, 180, 20)));
+                            ui.label(RichText::new("★").color(theme::of(ui).ink_muted));
                         }
                         if f.shared {
                             ui.weak("👥");
@@ -1636,7 +1625,7 @@ impl App {
                                     lc.path.display()
                                 ));
                             } else {
-                                ui.label(RichText::new("💾").color(Color32::from_rgb(80, 170, 90)))
+                                ui.label(RichText::new("💾").color(theme::of(ui).success))
                                     .on_hover_text(format!("Downloaded to {}\nDouble-click opens it", lc.path.display()));
                             }
                         }
@@ -1926,10 +1915,12 @@ impl App {
                 ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
                     for t in self.toasts.iter().rev() {
                         let v = ui.visuals();
-                        let fill = if t.error { v.error_fg_color.gamma_multiply(0.25) } else { v.extreme_bg_color };
-                        egui::Frame::popup(ui.style()).fill(fill).show(ui, |ui| {
+                        let _ = v;
+                        let p = theme::of(ui);
+                        let color = if t.error { p.danger } else { p.ink };
+                        egui::Frame::popup(ui.style()).fill(p.surface_raised).show(ui, |ui| {
                             ui.set_max_width(460.0);
-                            ui.label(&t.text);
+                            ui.colored_label(color, &t.text);
                         });
                     }
                 });
@@ -1984,14 +1975,15 @@ impl App {
             ctx.request_repaint_after(Duration::from_millis(30)); // no pointer events while dragging
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("drop")));
             let screen = ctx.content_rect();
-            let accent = ctx.global_style().visuals.selection.bg_fill;
+            let p = theme::of_ctx(ctx);
+            let accent = p.brand;
             match &hit {
                 Some((rect, _, _)) => {
-                    painter.rect_filled(*rect, 4.0, accent.gamma_multiply(0.35));
-                    painter.rect_stroke(*rect, 4.0, egui::Stroke::new(2.0, accent), egui::StrokeKind::Inside);
+                    painter.rect_filled(*rect, theme::RADIUS_MD, p.brand_subtle);
+                    painter.rect_stroke(*rect, theme::RADIUS_MD, egui::Stroke::new(2.0, accent), egui::StrokeKind::Inside);
                 }
                 None => {
-                    painter.rect_filled(screen, 0.0, accent.gamma_multiply(0.08));
+                    painter.rect_filled(screen, 0.0, p.brand_subtle.gamma_multiply(0.5));
                     painter.rect_stroke(screen.shrink(3.0), 6.0, egui::Stroke::new(3.0, accent), egui::StrokeKind::Inside);
                 }
             }
@@ -1999,13 +1991,13 @@ impl App {
                 Some((_, name)) => format!("⬆  Drop to upload into “{name}”"),
                 None => "Still syncing — can't upload yet".into(),
             };
-            let galley = painter.layout_no_wrap(text, egui::FontId::proportional(17.0), Color32::WHITE);
+            let galley = painter.layout_no_wrap(text, theme::semibold_font(theme::FONT_UI_TITLE), p.on_brand);
             let pill = egui::Rect::from_center_size(
                 egui::pos2(screen.center().x, screen.bottom() - 60.0),
                 galley.size() + egui::vec2(32.0, 18.0),
             );
             painter.rect_filled(pill, 18.0, accent);
-            painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
+            painter.galley(pill.center() - galley.size() / 2.0, galley, p.on_brand);
         }
         if !dropped.is_empty() {
             self.drop_hover = None;

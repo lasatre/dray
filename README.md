@@ -1,145 +1,178 @@
-<img src="brand/logo/app-icon.svg" width="72" height="72" alt="">
+<img src="brand/logo/app-icon.svg" width="72" height="72" alt="Dray app icon">
 
 # Dray
 
-A fast native desktop front-end for Google Drive, written in Rust (egui).
+A fast, native desktop client for Google Drive.
 
-It keeps your whole Drive's metadata in a local cache, so search is instant and works
-offline. Changes come in through the Drive Changes API, and anything you upload, rename or
-move goes into the cache the moment Google responds. Links are copied from the cache, so
-copying one needs no network request.
+Dray keeps a local index of your whole Drive, so finding a file takes milliseconds and works
+offline. Type a few letters, press Enter to open the file or Ctrl+C to copy its link. Uploads,
+downloads, renames and moves happen in the background.
 
-## Features
+![Dray showing My Drive in the light theme, with an upload in progress and a failed upload](docs/screenshots/files-light.png)
 
-- **Instant search** over every file name in My Drive, Shared with me and shared drives.
-  Search is multi-word and ignores punctuation (`tax 2024` matches `Tax_Return-2024.pdf`).
-  Words can also match the folder path. Results are ranked (prefix > word start > substring),
-  with recent files first on ties. 200k files search in roughly 2–10 ms.
-  - Filters: `type:pdf|doc|sheet|slide|folder|image|video|audio|zip|code`, `ext:psd`,
-    `is:starred`, `is:shared`, `is:mine`, `is:trashed`, `"exact phrase"`
-  - **📁 This folder** (Ctrl+Shift+F) limits the search to the open folder and its
-    subfolders. It stays on as you move between folders.
-  - **Shift+Enter** searches inside file contents (Drive full-text search, done server-side).
-- **Launcher-style keyboard flow**: type, use ↑/↓, then **Enter** to open or **Ctrl+C** to
-  copy the link. **Ctrl+Shift+S** shares the file as "anyone with link" and copies the link.
-- **Drag & drop uploads, like the web UI**: drop files or whole folders onto a folder row, a
-  sidebar entry or a breadcrumb to upload into that folder. Dropping anywhere else uploads into
-  the folder you're viewing. Ctrl+U opens a file picker instead. Up to 4 uploads run in
-  parallel. Large files use resumable uploads. When the upload finishes, the file is
-  selected right away and (optionally) its link is copied.
-- **Downloads are remembered**: after you download a file, double-clicking it (or pressing
-  Enter) opens your local copy instead of the web page. A 💾 marks downloaded files and turns
-  orange when Drive has a newer version; Ctrl+S then updates the copy in place. Downloads go to
-  your Downloads folder by default; change it in Settings.
-- **Startup folder**: open the app in any folder (right-click → "Open this folder at startup",
-  or Settings → Open at startup). You can also start in Recent, Starred or Shared.
-- Browse My Drive, Recent, Starred, Shared with me, Trash and shared drives. You can
-  rename, star, trash/restore, move (Ctrl+X → Ctrl+V), create folders and download. Google
-  Docs/Sheets/Slides are exported as .docx/.xlsx/.pptx.
-- The first index is built with up to 8 parallel listing requests and streams into the UI.
-  After that, the cache is ready at startup and only changes are fetched (every 15 s by
-  default, or press F5).
+Dray is an independent project and is not affiliated with or endorsed by Google.
 
-## Build
+## What it does
 
-```sh
-# needs a Rust toolchain (https://rustup.rs) and a C compiler (gcc/clang) for bundled SQLite
-cargo build --release
-./target/release/dray
-```
+- **Instant search** across My Drive, Shared with me and shared drives. 200,000 files search in
+  under 10 ms. Words can match anywhere in a name or its folder path, so `tax 2024` finds
+  `Tax_Return-2024.pdf`.
+- **Keyboard first.** Start typing anywhere to search, use the arrow keys, then Enter to open or
+  Ctrl+C to copy the link. Every action has a shortcut (see below).
+- **Drag and drop uploads.** Drop files or whole folders onto a folder row, a sidebar entry or a
+  breadcrumb to upload into that folder, or anywhere else to upload into the folder you're in.
+  Large files use resumable uploads, and failed uploads stay in the list with a Retry link.
+- **Downloads you can reopen.** After you download a file, double-clicking it opens your local
+  copy. Dray marks files whose Drive version is newer; Ctrl+S updates your copy in place.
+- **Search inside files.** Shift+Enter runs Google Drive's full-text search for the current
+  query.
+- **Everything else you'd expect:** browse Recent, Starred, Shared with me, Trash and shared
+  drives; rename, star, move (Ctrl+X, then Ctrl+V), trash and restore; create folders; share a
+  file with anyone who has the link and copy that link in one step. Google Docs, Sheets and
+  Slides download as .docx, .xlsx and .pptx.
+- **Light and dark themes** that follow your system setting, plus a compact row density.
 
-### Packages (CI)
+<table>
+<tr>
+<td><img src="docs/screenshots/search.png" alt="Searching 200,000 files for 'report pdf' in 6.5 ms"></td>
+<td><img src="docs/screenshots/menu-dark.png" alt="The file menu in the dark theme"></td>
+</tr>
+<tr>
+<td>Search shows where each match lives.</td>
+<td>The dark theme and the file menu.</td>
+</tr>
+</table>
 
-`.forgejo/workflows/build.yml` runs on every push and PR. It builds:
+## Install
 
-- `Dray-<version>-x86_64.AppImage`, built on Debian bookworm, so it runs on any
-  distro with glibc ≥ 2.36
-- `Dray-<version>-windows-x64.zip` (a standalone `Dray.exe` + README),
-  cross-compiled with mingw-w64; it has no DLL dependencies beyond Windows' own
+Download the latest build from this repository's Releases page:
 
-Both files are attached to the workflow run as artifacts. When you push a `v*` tag
-(e.g. `git tag v0.1.0 && git push --tags`), they're also published to a Forgejo release.
-The workflow needs a runner with the `docker` label. The same steps work locally:
+- **Windows:** `Dray-<version>-windows-x64.zip`. Unzip it anywhere and run `Dray.exe`. It needs
+  no installer and no extra DLLs.
+- **Linux:** `Dray-<version>-x86_64.AppImage`. Make it executable (`chmod +x`) and run it. It
+  works on any distribution with glibc 2.36 or newer, such as Debian 12 and later.
+- **macOS:** no package yet; [build from source](#build-from-source).
 
-```sh
-packaging/build-appimage.sh   # -> dist/*.AppImage
-packaging/build-windows.sh    # -> dist/*.zip  (needs mingw-w64 + the x86_64-pc-windows-gnu target)
-```
+## First run: connect your Google account
 
-## One-time Google setup
+Google asks every desktop app that reads Drive to use its own OAuth client. Setting one up is
+free and takes about five minutes, and you only do it once:
 
-Google requires each desktop app to have its own OAuth client. It's free and takes about
-5 minutes:
+1. Open the [Google Cloud Console](https://console.cloud.google.com/), create a project, and
+   enable the **Google Drive API** (APIs & Services, then Library).
+2. Open **OAuth consent screen**. Choose **External**, fill in an app name and your email, and
+   add yourself under **Test users**.
+3. Go to **Credentials**, then **Create credentials**, **OAuth client ID**, application type
+   **Desktop app**. Download the JSON file.
+4. Start Dray and drop the JSON file on its window (or paste the client ID and secret), then
+   select **Sign in with Google** and finish signing in in your browser.
 
-1. Go to <https://console.cloud.google.com/>, create a project, and enable the
-   **Google Drive API** (APIs & Services → Library).
-2. Go to **OAuth consent screen** (Google Auth Platform): choose External, fill in the app
-   name and your email, and add yourself under **Test users**.
-3. Go to **Credentials → Create credentials → OAuth client ID → Application type: Desktop
-   app**, and download the JSON.
-4. Start Dray. Drop the JSON on the window (or paste the client ID and secret),
-   then click **Sign in with Google**.
+Dray then lists your Drive once, which takes from seconds to a few minutes depending on its
+size. After that it starts instantly from its local index and only fetches changes, every 15
+seconds by default.
 
-> **Tip:** while the consent screen is in *Testing* status, Google expires refresh tokens
-> after 7 days, so you'd have to sign in again every week. To avoid that, click
-> **Publish app** on the consent screen. You'll see an "unverified app" warning once at
-> sign-in, which is expected for a personal app.
+> **Staying signed in:** while the consent screen is in *Testing* status, Google expires the
+> sign-in after 7 days. To avoid signing in every week, select **Publish app** on the consent
+> screen. Google then shows an "unverified app" notice once at sign-in, which is expected for
+> an app you set up yourself.
+
+## Search
+
+Type words in any order. Results rank names that start with your words first, then recent
+files. Filters narrow the results:
+
+| Filter | Matches |
+|---|---|
+| `type:pdf`, `type:doc`, `type:sheet`, `type:slide`, `type:folder`, `type:image`, `type:video`, `type:audio`, `type:zip`, `type:code` | Files of that kind |
+| `ext:psd` | Files with that extension |
+| `is:starred`, `is:shared`, `is:mine`, `is:trashed` | Starred, shared, owned by you, or in Trash |
+| `"exact phrase"` | Names containing the phrase as typed |
+
+**This folder** (Ctrl+Shift+F) limits the search to the open folder and its subfolders.
+**Search contents** (Shift+Enter) asks Google Drive to search inside files.
 
 ## Keyboard shortcuts
 
 | Keys | Action |
 |---|---|
-| just type / Ctrl+F / Ctrl+K | Search |
+| Just type, Ctrl+F or Ctrl+K | Search |
 | Ctrl+Shift+F | Search only the open folder (toggle) |
-| ↑ ↓ PgUp PgDn (Shift to extend) | Move selection, even while typing |
-| Enter / double-click | Open the local copy if downloaded, else in the browser; enter folders |
-| Ctrl+Enter | Show the result in its folder |
-| Shift+Enter | Search file contents on Drive |
-| Ctrl+C / Ctrl+Shift+C | Copy link(s) |
-| Ctrl+Shift+D | Copy direct-download link |
-| Ctrl+Shift+S | Share "anyone with link" and copy the link |
+| Up, Down, Page Up, Page Down (Shift to extend) | Move the selection, even while typing |
+| Enter or double-click | Open: the local copy if downloaded, otherwise in the browser; enter folders |
+| Ctrl+Enter | Show a search result in its folder |
+| Shift+Enter | Search file contents on Google Drive |
+| Ctrl+C or Ctrl+Shift+C | Copy link |
+| Ctrl+Shift+D | Copy direct download link |
+| Ctrl+Shift+S | Share with anyone who has the link, and copy the link |
 | Ctrl+O | Open in browser |
-| Ctrl+S | Download (or update the local copy) |
-| Ctrl+U / drag & drop | Upload (drop onto a folder to upload into it) |
+| Ctrl+S | Download, or update the local copy |
+| Ctrl+U, or drag and drop | Upload |
 | Ctrl+Shift+N | New folder |
 | F2 | Rename |
-| Delete | Trash (Restore in Trash view) |
+| Delete | Move to Trash (Restore when in Trash) |
 | Ctrl+X, then Ctrl+V | Move to another folder |
-| Backspace / Alt+↑ | Parent folder |
-| Alt+← / Alt+→ | Back / forward |
-| Esc | Clear search |
-| F5 / Ctrl+R | Sync now |
+| Backspace or Alt+Up | Parent folder |
+| Alt+Left, Alt+Right | Back, forward |
+| Esc | Clear the search |
+| F5 or Ctrl+R | Sync now |
+| Tab | Move keyboard focus between controls |
 
-## Linux: X11 vs Wayland
+## Settings
 
-winit, the windowing library, doesn't support file drag-and-drop on native Wayland yet. So on
-Linux the app runs through XWayland whenever `DISPLAY` is set (KDE and GNOME scale XWayland
-apps crisply by default). `DRAY_WAYLAND=1` forces native Wayland, but drag-and-drop upload
-won't work there.
+Open **Settings** at the bottom of the sidebar to choose the theme (System, Light or Dark),
+row density, the folder Dray opens at startup (or right-click any folder and choose **Open this
+folder at startup**), where downloads go, and how often Dray checks for changes. **Rebuild
+cache** downloads the full file list again; **Sign out** removes your sign-in and the local file
+index from this computer.
 
-`vendor/winit` is winit 0.30.13 with one small patch that reports the cursor position during an
-XDND drag, so drops can target a specific folder. See `vendor/winit/PATCHED.md`.
+## Your data
 
-## Where things are stored
+Dray talks only to Google's APIs; there is no Dray server. It stores:
 
-- `~/.config/dray/`: `client.json` (OAuth client) and `token.json` (refresh
-  token, mode 0600), plus `settings.json`
-- downloaded-file locations live in the cache database's `local_copies` table
-- `~/.local/share/dray/cache.sqlite3`: metadata cache (Settings → Rebuild cache
-  wipes and re-lists it)
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| Settings, OAuth client and sign-in token | `%APPDATA%\dray\config` | `~/.config/dray` | `~/Library/Application Support/dray` |
+| File index (metadata only, no file contents) | `%LOCALAPPDATA%\dray\data` | `~/.local/share/dray` | `~/Library/Application Support/dray` |
 
-## Demo mode
+The sign-in token file is readable only by your user account. Downloads go to your Downloads
+folder unless you pick another one in Settings.
 
-`DRAY_DEMO=200000 ./target/release/dray` starts without signing in, with 200k
-synthetic files. It's useful for trying out the UI and search speed.
+## Linux: X11 and Wayland
 
-## Layout
+winit, the windowing library Dray uses, doesn't support file drag-and-drop on native Wayland
+yet, so on Linux Dray runs through XWayland whenever `DISPLAY` is set (KDE and GNOME scale
+XWayland apps crisply by default). Set `DRAY_WAYLAND=1` to force native Wayland; drag-and-drop
+upload won't work there.
 
-| File | Purpose |
+## Build from source
+
+You need a Rust toolchain (<https://rustup.rs>, Rust 1.95 or newer) and a C compiler for the
+bundled SQLite.
+
+```sh
+cargo build --release
+./target/release/dray
+```
+
+`DRAY_DEMO=200000 ./target/release/dray` starts with 200,000 made-up files in a throwaway
+profile, without signing in, which is handy for trying the interface.
+
+The packaging scripts build the release files: `packaging/build-appimage.sh` for the AppImage
+and `packaging/build-windows.sh` for the Windows zip (cross-compiled with mingw-w64).
+`.forgejo/workflows/build.yml` runs both on every push and publishes them for `v*` tags.
+
+| Path | Contents |
 |---|---|
-| `src/auth.rs` | OAuth loopback + PKCE sign-in, token refresh |
-| `src/drive.rs` | Drive v3 REST client (list, changes, upload, download, share, …) with retry/backoff |
-| `src/cache.rs` | SQLite metadata cache |
-| `src/backend.rs` | Background sync (parallel full listing + Changes API) and file operations |
-| `src/index.rs` | In-memory index: folder paths, children, ranked parallel search |
-| `src/app.rs` | egui UI |
+| `src/` | The app: `app.rs` (interface), `theme.rs` and `widgets.rs` (look), `backend.rs` and `drive.rs` (sync and the Drive API), `index.rs` (search), `auth.rs` (sign-in) |
+| `brand/` | Brand rules, design tokens, logo files and component references |
+| `assets/` | Bundled font and icons, with their licenses |
+| `packaging/` | Release scripts, desktop entry and Windows icon |
+| `vendor/winit/` | winit 0.30.13 with a small patch for drag-and-drop targets on X11 (see `PATCHED.md`) |
+
+## Credits
+
+Monospace type is [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (SIL Open Font License
+1.1). Icons are [Lucide](https://lucide.dev) (ISC license). See `assets/README.md`.
+
+Dray is an independent project and is not affiliated with or endorsed by Google. Google Drive
+is a trademark of Google LLC.

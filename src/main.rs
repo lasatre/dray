@@ -10,6 +10,7 @@ mod index;
 mod model;
 mod pointer;
 mod theme;
+mod widgets;
 
 fn main() -> eframe::Result {
     // DRAY_DEMO=<n>: synthetic files in a throwaway profile (no sign-in, no network).

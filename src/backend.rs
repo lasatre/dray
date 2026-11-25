@@ -37,13 +37,26 @@ pub enum Event {
     LoggedIn,
     AuthRequired(String),
     Toast { text: String, error: bool },
-    Progress { id: u64, label: String, frac: Option<f32> },
+    Progress { id: u64, info: TransferInfo, frac: Option<f32> },
     ProgressDone(u64),
+    TransferFailed { info: TransferInfo, error: String },
     Uploaded { file: DFile, single: bool },
     ContentResults { query: String, ids: Vec<String> },
     CopyText { text: String, toast: String },
     LocalCopies(Vec<(String, PathBuf, String)>),
     Downloaded { id: String, path: PathBuf, modified: String },
+}
+
+/// What a running transfer is, so the UI can show it in the right row.
+#[derive(Clone, Debug)]
+pub struct TransferInfo {
+    pub upload: bool,
+    pub name: String,
+    /// Uploads: the destination folder id. Downloads: the file id.
+    pub target: String,
+    pub size: Option<u64>,
+    /// Uploads: the local source file.
+    pub path: Option<PathBuf>,
 }
 
 enum SyncCmd {
@@ -445,16 +458,25 @@ impl Backend {
                     continue;
                 }
                 let id = b.inner.next_id.fetch_add(1, Ordering::Relaxed);
-                let label = format!("⬇ {}", f.name);
+                let info = TransferInfo {
+                    upload: false,
+                    name: f.name.clone(),
+                    target: f.id.clone(),
+                    size: f.size_bytes(),
+                    path: None,
+                };
                 let mut last = Instant::now() - Duration::from_secs(1);
                 let r = d.download(&f, &dir, existing.as_deref(), |done, total| {
                     if last.elapsed() > Duration::from_millis(100) {
                         last = Instant::now();
                         let frac = total.map(|t| done as f32 / t.max(1) as f32);
-                        b.send(Event::Progress { id, label: label.clone(), frac });
+                        b.send(Event::Progress { id, info: info.clone(), frac });
                     }
                 });
                 b.send(Event::ProgressDone(id));
+                if let Err(e) = &r {
+                    b.send(Event::TransferFailed { info, error: format!("{e:#}") });
+                }
                 let path = r?;
                 let modified = f.modified_time.clone().unwrap_or_default();
                 let _ = b.inner.cache.lock().unwrap().set_local_copy(&f.id, &path.to_string_lossy(), &modified);
@@ -497,15 +519,21 @@ impl Backend {
                     s.spawn(|| {
                         while let Some((p, par)) = { jobs.lock().unwrap().pop_front() } {
                             let id = b.inner.next_id.fetch_add(1, Ordering::Relaxed);
-                            let label = format!("⬆ {}", p.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
-                            b.send(Event::Progress { id, label: label.clone(), frac: Some(0.0) });
+                            let info = TransferInfo {
+                                upload: true,
+                                name: p.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string(),
+                                target: par.clone(),
+                                size: p.metadata().ok().map(|m| m.len()),
+                                path: Some(p.clone()),
+                            };
+                            b.send(Event::Progress { id, info: info.clone(), frac: Some(0.0) });
                             let mut last = Instant::now();
                             let r = d.upload(&p, &par, |sent, len| {
                                 if last.elapsed() > Duration::from_millis(100) {
                                     last = Instant::now();
                                     b.send(Event::Progress {
                                         id,
-                                        label: label.clone(),
+                                        info: info.clone(),
                                         frac: Some(sent as f32 / len.max(1) as f32),
                                     });
                                 }
@@ -516,7 +544,10 @@ impl Backend {
                                     b.apply(vec![f.clone()]);
                                     *last_file.lock().unwrap() = Some(f);
                                 }
-                                Err(e) => errors.lock().unwrap().push(format!("{}: {e:#}", p.display())),
+                                Err(e) => {
+                                    b.send(Event::TransferFailed { info, error: format!("{e:#}") });
+                                    errors.lock().unwrap().push(format!("{}: {e:#}", p.display()));
+                                }
                             }
                         }
                     });

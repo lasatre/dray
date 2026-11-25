@@ -195,6 +195,7 @@ fn apply(style: &mut egui::Style, p: &Palette, dark: bool) {
         (Name(MONO_SMALL.into()), mono_font(FONT_MONO_SMALL)),
     ]
     .into();
+    style.drag_value_text_style = Monospace; // numbers with units ("15 s") are mono
     style.animation_time = 0.1; // hover and press: 100 ms
     style.interaction.selectable_labels = false;
 

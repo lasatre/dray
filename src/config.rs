@@ -111,11 +111,13 @@ pub struct Settings {
     pub download_dir: Option<std::path::PathBuf>,
     /// What to show at startup: "mydrive", "recent", "starred", "shared" or "folder:<id>".
     pub start_view: Option<String>,
+    /// File list density: 28 px rows instead of 36 px.
+    pub compact_rows: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { copy_link_after_upload: true, poll_seconds: 15, dark_mode: None, download_dir: None, start_view: None }
+        Settings { copy_link_after_upload: true, poll_seconds: 15, dark_mode: None, download_dir: None, start_view: None, compact_rows: false }
     }
 }
 

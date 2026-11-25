@@ -1,9 +1,10 @@
-use crate::backend::{Backend, Event, SyncState};
+use crate::backend::{Backend, Event, SyncState, TransferInfo};
 use crate::config::{ClientCreds, Paths, Settings};
 use crate::index::{Index, Query, Roots};
 use crate::model::{DFile, Kind, SharedDrive};
 use crate::pointer::PointerProbe;
 use crate::theme;
+use crate::widgets::{self, Button, Status};
 use eframe::egui::{self, Align, Id, Key, Layout, Modifiers, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
@@ -14,7 +15,6 @@ use std::time::{Duration, Instant};
 
 const SEARCH_LIMIT: usize = 5000;
 const RECENT_LIMIT: usize = 500;
-const ROW_H: f32 = 26.0;
 
 #[derive(Clone, PartialEq, Debug)]
 enum View {
@@ -92,6 +92,8 @@ enum Action {
     ContentSearch,
     Sort(SortKey),
     SetStartFolder(String),
+    RetryUpload(usize),
+    DismissFailed(usize),
 }
 
 #[derive(Clone)]
@@ -105,6 +107,13 @@ impl LocalCopy {
     fn outdated(&self, f: &DFile) -> bool {
         !self.modified.is_empty() && f.modified_time.as_deref().is_some_and(|m| m > self.modified.as_str())
     }
+}
+
+/// An upload shown as a row in its destination folder: running (with progress) or failed
+/// (index into `App::failed`, error).
+enum Pending<'a> {
+    Uploading(&'a TransferInfo, Option<f32>),
+    Failed(usize, &'a TransferInfo, &'a str),
 }
 
 /// A place files can be dropped onto: screen rect, folder id, display name.
@@ -172,13 +181,18 @@ pub struct App {
     rename: Option<(String, String)>,
     new_folder: Option<String>,
     settings_open: bool,
+    about_open: bool,
     dialog_focus: bool,
+    /// Focus came from the keyboard (Tab), so the focus ring shows on every control.
+    keyboard_focus: bool,
 
     // status
     sync: SyncState,
     synced_at: Option<Instant>,
     toasts: Vec<Toast>,
-    transfers: Vec<(u64, String, Option<f32>)>,
+    transfers: Vec<(u64, TransferInfo, Option<f32>)>,
+    /// Transfers that failed this session (shown in their row until retried or dismissed).
+    failed: Vec<(TransferInfo, String)>,
 
     // setup screen
     creds: ClientCreds,
@@ -248,11 +262,14 @@ impl App {
             rename: None,
             new_folder: None,
             settings_open: false,
+            about_open: false,
             dialog_focus: false,
+            keyboard_focus: false,
             sync: SyncState::Idle,
             synced_at: None,
             toasts: Vec::new(),
             transfers: Vec::new(),
+            failed: Vec::new(),
             creds,
             setup_msg: None,
             login_waiting: false,
@@ -304,6 +321,17 @@ impl App {
             self.view = View::Folder(folder);
             self.scope_folder = true;
         }
+        // One running and one failed upload, so every row state can be looked at.
+        let upload = |name: &str, size: u64| TransferInfo {
+            upload: true,
+            name: name.into(),
+            target: "root".into(),
+            size: Some(size),
+            path: None,
+        };
+        self.transfers.push((u64::MAX, upload("site-photos.zip", 333_447_168), Some(0.62)));
+        self.failed.push((upload("notes.txt", 2_048), "Couldn't reach Google".into()));
+        self.synced_at = Some(Instant::now());
         self.cache_loaded = true;
         self.index_dirty = true;
     }
@@ -379,13 +407,18 @@ impl App {
                     }
                 }
                 Event::Toast { text, error } => self.toast(text, error),
-                Event::Progress { id, label, frac } => {
+                Event::Progress { id, info, frac } => {
                     match self.transfers.iter_mut().find(|t| t.0 == id) {
                         Some(t) => t.2 = frac,
-                        None => self.transfers.push((id, label, frac)),
+                        None => {
+                            // A new attempt replaces an earlier failure of the same transfer.
+                            self.failed.retain(|(f, _)| !(f.upload == info.upload && f.target == info.target && f.name == info.name));
+                            self.transfers.push((id, info, frac));
+                        }
                     }
                 }
                 Event::ProgressDone(id) => self.transfers.retain(|t| t.0 != id),
+                Event::TransferFailed { info, error } => self.failed.push((info, error)),
                 Event::Uploaded { file, single } => {
                     if single && self.settings.copy_link_after_upload {
                         ctx.copy_text(file.view_link());
@@ -938,6 +971,19 @@ impl App {
                     self.backend.content_search(q);
                 }
             }
+            Action::RetryUpload(i) => {
+                if i < self.failed.len() {
+                    let (info, _) = self.failed.remove(i);
+                    if let Some(path) = info.path {
+                        self.backend.upload(vec![path], info.target);
+                    }
+                }
+            }
+            Action::DismissFailed(i) => {
+                if i < self.failed.len() {
+                    self.failed.remove(i);
+                }
+            }
             Action::SetStartFolder(id) => {
                 let v = self.folder_view(&id);
                 self.settings.start_view = Some(v.to_setting());
@@ -1158,96 +1204,105 @@ impl App {
         if let Some(p) = dropped.into_iter().next() {
             self.load_creds_file(p);
         }
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(30.0);
-                ui.heading("Dray");
-                ui.label("A fast local front-end for Google Drive");
-                ui.add_space(20.0);
-            });
-            ui.vertical_centered(|ui| {
-                ui.set_max_width(620.0);
-                egui::Frame::group(ui.style()).inner_margin(16.0).show(ui, |ui| {
-                    ui.set_width(580.0);
-                    ui.with_layout(Layout::top_down(Align::LEFT), |ui| {
-                    ui.strong("One-time setup: your own Google OAuth client");
-                    ui.add_space(4.0);
-                    for line in [
-                        "1. In Google Cloud Console create a project and enable the Google Drive API.",
-                        "2. Configure the OAuth consent screen (External; add yourself as a test user).",
-                        "3. Credentials → Create credentials → OAuth client ID → Desktop app.",
-                        "4. Download the JSON and drop it on this window (or browse / paste below).",
-                    ] {
-                        ui.label(line);
-                    }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Open Cloud Console").clicked() {
-                            let _ = open::that_detached("https://console.cloud.google.com/apis/credentials");
-                        }
-                        if ui.button("Enable Drive API").clicked() {
-                            let _ = open::that_detached(
-                                "https://console.cloud.google.com/apis/library/drive.googleapis.com",
-                            );
-                        }
-                        if ui.button("Browse for JSON…").clicked() {
-                            let tx = self.ui_tx.clone();
-                            let ctx = ctx.clone();
-                            std::thread::spawn(move || {
-                                if let Some(p) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
-                                    let _ = tx.send(UiMsg::CredsFile(p));
-                                    ctx.request_repaint();
-                                }
-                            });
-                        }
-                    });
-                    ui.add_space(10.0);
-                    egui::Grid::new("creds").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                        ui.label("Client ID");
-                        ui.add(egui::TextEdit::singleline(&mut self.creds.client_id).desired_width(440.0));
-                        ui.end_row();
-                        ui.label("Client secret");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.creds.client_secret)
-                                .password(true)
-                                .desired_width(440.0),
-                        );
-                        ui.end_row();
-                    });
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        let ready = self.creds.is_complete() && !self.login_waiting;
-                        if ui.add_enabled(ready, egui::Button::new("Sign in with Google")).clicked() {
-                            self.login_waiting = true;
-                            self.setup_msg = None;
-                            self.backend.login(self.creds.clone());
-                        }
-                        if self.login_waiting {
-                            ui.spinner();
-                            ui.label("Waiting for you to finish in the browser…");
-                        }
-                    });
-                    if let Some((msg, err)) = &self.setup_msg {
-                        ui.add_space(6.0);
-                        let color = if *err { ui.visuals().error_fg_color } else { ui.visuals().text_color() };
-                        ui.colored_label(color, msg);
-                    }
-                    ui.add_space(6.0);
-                    ui.small(format!(
-                        "Tokens are stored in {} (readable only by you). Metadata cache: {}",
-                        self.paths.config_dir.display(),
-                        self.paths.cache_file().display()
-                    ));
-                    });
+        let p = theme::of(ui);
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(p.surface)).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(theme::SPACE_12);
+                    ui.label(RichText::new("Dray").font(theme::semibold_font(theme::FONT_TITLE)).color(p.ink));
+                    ui.label(RichText::new("A fast local front-end for Google Drive").weak());
+                    ui.add_space(theme::SPACE_6);
                 });
+                ui.vertical_centered(|ui| {
+                    let width = 620.0;
+                    ui.set_max_width(width);
+                    egui::Frame::new()
+                        .fill(p.surface_raised)
+                        .stroke(egui::Stroke::new(1.0, p.border))
+                        .corner_radius(theme::radius(theme::RADIUS_LG))
+                        .inner_margin(theme::SPACE_8)
+                        .show(ui, |ui| {
+                            ui.set_width(width - 2.0 * theme::SPACE_8);
+                            ui.with_layout(Layout::top_down(Align::LEFT), |ui| {
+                                ui.heading("One-time setup: your own Google OAuth client");
+                                ui.add_space(theme::SPACE_2);
+                                for line in [
+                                    "1. In Google Cloud Console create a project and enable the Google Drive API.",
+                                    "2. Configure the OAuth consent screen (External; add yourself as a test user).",
+                                    "3. Credentials → Create credentials → OAuth client ID → Desktop app.",
+                                    "4. Download the JSON and drop it on this window (or browse / paste below).",
+                                ] {
+                                    ui.label(line);
+                                }
+                                ui.add_space(theme::SPACE_4);
+                                ui.horizontal(|ui| {
+                                    if ui.add(Button::secondary("Open Cloud Console")).clicked() {
+                                        let _ = open::that_detached("https://console.cloud.google.com/apis/credentials");
+                                    }
+                                    if ui.add(Button::secondary("Enable Drive API")).clicked() {
+                                        let _ = open::that_detached(
+                                            "https://console.cloud.google.com/apis/library/drive.googleapis.com",
+                                        );
+                                    }
+                                    if ui.add(Button::secondary("Browse for JSON…")).clicked() {
+                                        let tx = self.ui_tx.clone();
+                                        let ctx = ctx.clone();
+                                        std::thread::spawn(move || {
+                                            if let Some(p) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                                                let _ = tx.send(UiMsg::CredsFile(p));
+                                                ctx.request_repaint();
+                                            }
+                                        });
+                                    }
+                                });
+                                ui.add_space(theme::SPACE_4);
+                                egui::Grid::new("creds").num_columns(2).spacing([theme::SPACE_3, theme::SPACE_2]).show(ui, |ui| {
+                                    ui.label("Client ID");
+                                    ui.add(text_input(&mut self.creds.client_id).desired_width(420.0));
+                                    ui.end_row();
+                                    ui.label("Client secret");
+                                    ui.add(text_input(&mut self.creds.client_secret).password(true).desired_width(420.0));
+                                    ui.end_row();
+                                });
+                                ui.add_space(theme::SPACE_4);
+                                ui.horizontal(|ui| {
+                                    let ready = self.creds.is_complete() && !self.login_waiting;
+                                    if ui.add_enabled(ready, Button::primary("Sign in with Google")).clicked() {
+                                        self.login_waiting = true;
+                                        self.setup_msg = None;
+                                        self.backend.login(self.creds.clone());
+                                    }
+                                    if self.login_waiting {
+                                        ui.add(egui::Spinner::new().color(p.ink_muted));
+                                        ui.label("Waiting for you to finish in the browser…");
+                                    }
+                                });
+                                if let Some((msg, err)) = &self.setup_msg {
+                                    ui.add_space(theme::SPACE_2);
+                                    let color = if *err { p.danger } else { p.ink };
+                                    ui.colored_label(color, msg);
+                                }
+                                ui.add_space(theme::SPACE_4);
+                                ui.label(RichText::new("Tokens are stored in (readable only by you):").small().weak());
+                                ui.label(widgets::mono_small(self.paths.config_dir.display().to_string()).weak());
+                                ui.label(RichText::new("Metadata cache:").small().weak());
+                                ui.label(widgets::mono_small(self.paths.cache_file().display().to_string()).weak());
+                            });
+                        });
+                });
+                ui.add_space(theme::SPACE_8);
             });
         });
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let mut targets: Vec<DropTarget> = Vec::new();
-        egui::Panel::left("sidebar").resizable(true).default_size(190.0).show(ui, |ui| {
-            ui.add_space(6.0);
+        let p = theme::of(ui);
+        let frame = egui::Frame::new().fill(p.surface_sunken).inner_margin(egui::Margin::same(theme::SPACE_2 as i8));
+        let mut toggle_settings = false;
+        let mut open_about = false;
+        egui::Panel::left("sidebar").resizable(true).default_size(208.0).frame(frame).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = theme::SPACE_1 / 2.0;
             let cur = self.view.clone();
             let searching = self.is_searching();
             let hover = self.drop_hover.as_ref().map(|h| h.0.clone());
@@ -1257,17 +1312,15 @@ impl App {
                     View::Folder(id) => Some(id.clone()),
                     _ => None,
                 };
-                let sel = (!searching && cur == v) || (drop_id.is_some() && drop_id == hover);
-                ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                    let r = ui.selectable_label(sel, RichText::new(label).size(15.0));
-                    if r.clicked() {
-                        actions.push(Action::Nav(v));
-                    }
-                    if let Some(id) = drop_id {
-                        let name = label.trim_start_matches(|c: char| !c.is_alphanumeric()).to_string();
-                        targets.push((r.rect, id, name));
-                    }
-                });
+                let selected = !searching && cur == v;
+                let drop = drop_id.is_some() && drop_id == hover;
+                let r = widgets::nav_item(ui, label, selected, drop);
+                if r.clicked() {
+                    actions.push(Action::Nav(v));
+                }
+                if let Some(id) = drop_id {
+                    targets.push((r.rect, id, label.to_string()));
+                }
             };
             item(ui, "🏠  My Drive", View::MyDrive, actions);
             item(ui, "🕘  Recent", View::Recent, actions);
@@ -1275,60 +1328,74 @@ impl App {
             item(ui, "👥  Shared with me", View::Shared, actions);
             item(ui, "🗑  Trash", View::Trash, actions);
             if !self.drives.is_empty() {
-                ui.add_space(8.0);
-                ui.weak("Shared drives");
+                ui.add_space(theme::SPACE_4);
+                ui.horizontal(|ui| {
+                    ui.add_space(theme::SPACE_2);
+                    widgets::section_label(ui, "Shared drives");
+                });
+                ui.add_space(theme::SPACE_1);
                 for d in self.drives.clone() {
                     item(ui, &format!("🖴  {}", d.name), View::Folder(d.id.clone()), actions);
                 }
             }
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                ui.add_space(6.0);
-                if ui.button("⚙ Settings").clicked() {
-                    self.settings_open = !self.settings_open;
-                }
-                ui.weak(format!("{} items cached", self.files.len()));
+                ui.spacing_mut().item_spacing.y = theme::SPACE_1;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = theme::SPACE_1;
+                    toggle_settings = ui.add(Button::ghost("⚙ Settings")).clicked();
+                    open_about = ui.add(Button::ghost("About")).clicked();
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(theme::SPACE_2);
+                    ui.label(RichText::new(format!("{} items cached", self.files.len())).small().weak());
+                });
             });
         });
+        if toggle_settings {
+            self.settings_open = !self.settings_open;
+        }
+        if open_about {
+            self.about_open = true;
+        }
         self.drop_targets.extend(targets);
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(6.0);
+        let p = theme::of(ui);
+        let frame = egui::Frame::new()
+            .fill(p.surface)
+            .inner_margin(egui::Margin::symmetric(theme::SPACE_3 as i8, theme::SPACE_2 as i8));
+        egui::Panel::top("top").frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.add_enabled(!self.back.is_empty() || self.is_searching(), egui::Button::new("◀")).on_hover_text("Back (Alt+←)").clicked() {
+                ui.spacing_mut().item_spacing.x = theme::SPACE_1;
+                if ui.add_enabled(!self.back.is_empty() || self.is_searching(), Button::ghost("◀")).on_hover_text("Back (Alt+←)").clicked() {
                     self.go_back();
                 }
-                if ui.add_enabled(!self.forward.is_empty(), egui::Button::new("▶")).on_hover_text("Forward (Alt+→)").clicked() {
+                if ui.add_enabled(!self.forward.is_empty(), Button::ghost("▶")).on_hover_text("Forward (Alt+→)").clicked() {
                     self.go_forward();
                 }
-                if ui.add_enabled(matches!(self.view, View::Folder(_)), egui::Button::new("⬆")).on_hover_text("Parent folder (Alt+↑)").clicked() {
+                if ui.add_enabled(matches!(self.view, View::Folder(_)), Button::ghost("⬆")).on_hover_text("Parent folder (Alt+↑)").clicked() {
                     self.go_up();
                 }
+                ui.add_space(theme::SPACE_2);
+                ui.spacing_mut().item_spacing.x = theme::SPACE_2;
                 let folder = self.current_folder();
                 let scope = self.search_scope();
-                let right_w = if folder.is_some() { 430.0 } else { 300.0 };
+                let right_w = if folder.is_some() { 440.0 } else { 320.0 };
                 let w = (ui.available_width() - right_w).max(200.0);
                 let hint = match &scope {
                     Some(id) => format!("🔍  Search in “{}” and its subfolders", self.folder_name(id)),
                     None => "🔍  Search all files   (type:pdf  ext:psd  is:starred  \"exact phrase\")".into(),
                 };
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.query)
-                        .id(search_id())
-                        .hint_text(hint)
-                        .desired_width(w)
-                        .margin(egui::vec2(8.0, 6.0)),
-                );
+                let resp = ui.add(text_input(&mut self.query).id(search_id()).hint_text(hint).desired_width(w));
                 if let Some(id) = &folder {
                     let on = scope.is_some();
-                    let label = if on { "📁 This folder ✔" } else { "📁 This folder" };
                     let tip = if on {
                         format!("Searching only “{}” and its subfolders — click to search everything (Ctrl+Shift+F)", self.folder_name(id))
                     } else {
                         format!("Only search “{}” and its subfolders (Ctrl+Shift+F)", self.folder_name(id))
                     };
-                    if ui.add(egui::Button::selectable(on, label)).on_hover_text(tip).clicked() {
+                    if ui.add(Button::secondary("📁 This folder").selected(on)).on_hover_text(tip).clicked() {
                         self.toggle_scope();
                     }
                 }
@@ -1340,7 +1407,7 @@ impl App {
                     let busy = self.content_pending.is_some();
                     let label = if busy { "Searching…" } else { "In contents" };
                     if ui
-                        .add_enabled(!busy, egui::Button::new(label))
+                        .add_enabled(!busy, Button::secondary(label))
                         .on_hover_text("Search inside file contents on Drive (Shift+Enter)")
                         .clicked()
                     {
@@ -1348,49 +1415,52 @@ impl App {
                     }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("➕ Folder").on_hover_text("New folder (Ctrl+Shift+N)").clicked() {
-                        actions.push(Action::NewFolder);
-                    }
-                    if ui.button("⬆ Upload").on_hover_text("Upload files (Ctrl+U) — or drop files on the window").clicked() {
+                    if ui.add(Button::primary("⬆ Upload")).on_hover_text("Upload files (Ctrl+U) — or drop files on the window").clicked() {
                         actions.push(Action::Upload);
+                    }
+                    if ui.add(Button::secondary("➕ Folder")).on_hover_text("New folder (Ctrl+Shift+N)").clicked() {
+                        actions.push(Action::NewFolder);
                     }
                     let syncing = matches!(self.sync, SyncState::Initial { .. } | SyncState::Incremental);
                     if syncing {
-                        ui.spinner();
-                    } else if ui.button("⟳").on_hover_text("Sync now (F5)").clicked() {
+                        ui.add_sized([theme::CONTROL_H, theme::CONTROL_H], egui::Spinner::new().size(theme::ICON).color(p.ink_muted));
+                    } else if ui.add(Button::ghost("⟳")).on_hover_text("Sync now (F5)").clicked() {
                         self.backend.sync_now();
                     }
                 });
             });
-            ui.add_space(4.0);
+            ui.add_space(theme::SPACE_2);
             // Breadcrumb / heading
             ui.horizontal(|ui| {
+                ui.set_min_height(theme::CONTROL_H);
                 if self.content_active() {
-                    ui.strong(format!("Content matches for “{}”", self.query.trim()));
-                    ui.weak("(from Drive)");
+                    ui.label(RichText::new(format!("Content matches for “{}”", self.query.trim())).font(theme::semibold_font(theme::FONT_UI_ROW)));
+                    ui.label(RichText::new("(from Drive)").weak());
                 } else if self.is_searching() {
-                    ui.strong(format!("{} result{}", self.total_matches, if self.total_matches == 1 { "" } else { "s" }));
+                    let n = self.total_matches;
+                    ui.label(RichText::new(format!("{n} result{}", if n == 1 { "" } else { "s" })).font(theme::semibold_font(theme::FONT_UI_ROW)));
                     if let Some(id) = self.search_scope() {
                         ui.label(format!("in “{}”", self.folder_name(&id)));
-                        if ui.small_button("✖ search everywhere").clicked() {
+                        if ui.add(Button::ghost("✖ search everywhere")).clicked() {
                             self.toggle_scope();
                         }
                     }
                     if self.total_matches > self.rows.len() {
-                        ui.weak(format!("(showing top {})", self.rows.len()));
+                        ui.label(RichText::new(format!("(showing top {})", self.rows.len())).weak());
                     }
-                    ui.weak(format!("· {:.1} ms", self.search_time.as_secs_f64() * 1000.0));
+                    ui.label(widgets::mono_small(format!("{:.1} ms", self.search_time.as_secs_f64() * 1000.0)).weak());
                 } else {
                     let mut targets = Vec::new();
                     self.breadcrumb(ui, actions, &mut targets);
                     self.drop_targets.extend(targets);
                 }
             });
-            ui.add_space(4.0);
         });
     }
 
     fn breadcrumb(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>, targets: &mut Vec<DropTarget>) {
+        let p = theme::of(ui);
+        let current = |ui: &mut egui::Ui, name: &str| ui.label(RichText::new(name).font(theme::semibold_font(theme::FONT_UI_ROW)).color(p.ink));
         let title = match &self.view {
             View::Recent => Some("Recent"),
             View::Starred => Some("Starred"),
@@ -1399,13 +1469,13 @@ impl App {
             _ => None,
         };
         if let Some(t) = title {
-            ui.strong(t);
+            current(ui, t);
             return;
         }
         let Some(mut id) = self.current_folder() else {
-            ui.strong("My Drive");
+            current(ui, "My Drive");
             if !self.cache_loaded || matches!(self.sync, SyncState::Initial { .. }) {
-                ui.spinner();
+                ui.add(egui::Spinner::new().size(theme::ICON).color(p.ink_muted));
             }
             return;
         };
@@ -1437,7 +1507,7 @@ impl App {
         let n = crumbs.len();
         for (i, (name, v)) in crumbs.into_iter().enumerate() {
             if i > 0 {
-                ui.weak("›");
+                ui.label(RichText::new("›").color(p.ink_muted));
             }
             let folder_id = match &v {
                 View::MyDrive => self.my_drive.clone(),
@@ -1446,7 +1516,7 @@ impl App {
             };
             let hovered = folder_id.is_some() && folder_id == self.drop_hover.as_ref().map(|h| h.0.clone());
             let r = if i + 1 == n {
-                ui.strong(name.clone())
+                current(ui, &name)
             } else {
                 let mut text = RichText::new(name.clone());
                 if hovered {
@@ -1465,51 +1535,63 @@ impl App {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status").show(ui, |ui| {
+        let p = theme::of(ui);
+        let frame = egui::Frame::new()
+            .fill(p.surface)
+            .inner_margin(egui::Margin::symmetric(theme::SPACE_3 as i8, theme::SPACE_1 as i8));
+        egui::Panel::bottom("status").frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
+                ui.set_min_height(theme::ROW_COMPACT);
+                let note = |ui: &mut egui::Ui, text: String| ui.label(RichText::new(text).small().weak());
                 match &self.sync {
                     SyncState::Initial { files } => {
-                        ui.spinner();
-                        ui.label(format!("Indexing Drive… {files} items"));
+                        widgets::status_pill(ui, Status::Syncing);
+                        note(ui, format!("Indexing Drive… {files} items"));
                     }
                     SyncState::Incremental => {
-                        ui.spinner();
-                        ui.label("Applying changes…");
+                        widgets::status_pill(ui, Status::Syncing);
+                        note(ui, "Applying changes…".into());
                     }
                     SyncState::Offline(e) => {
-                        ui.colored_label(ui.visuals().warn_fg_color, "⚠ Offline / sync error").on_hover_text(e);
+                        widgets::status_pill(ui, Status::Offline).on_hover_text(e);
+                        note(ui, "Offline / sync error".into()).on_hover_text(e);
                     }
                     SyncState::Idle => match self.synced_at {
                         Some(t) => {
-                            ui.weak(format!("✔ Up to date · checked {}", ago(t.elapsed())));
+                            widgets::status_pill(ui, Status::Synced);
+                            note(ui, format!("Up to date · checked {}", ago(t.elapsed())));
                             ui.ctx().request_repaint_after(Duration::from_secs(5));
                         }
                         None if !self.backend.has_session() => {
-                            ui.weak("Not signed in");
+                            note(ui, "Not signed in".into());
                         }
                         None => {
-                            ui.weak("Connecting…");
+                            note(ui, "Connecting…".into());
                         }
                     },
                 }
-                for (_, label, frac) in &self.transfers {
+                if !self.failed.is_empty() {
                     ui.separator();
-                    ui.label(label);
+                    widgets::status_pill(ui, Status::Failed);
+                    note(ui, format!("{} transfer(s)", self.failed.len()));
+                }
+                for (_, info, frac) in &self.transfers {
+                    ui.separator();
+                    let verb = if info.upload { "Uploading" } else { "Downloading" };
+                    note(ui, format!("{verb} {}", info.name));
                     match frac {
-                        Some(f) => {
-                            ui.add(egui::ProgressBar::new(*f).desired_width(120.0).show_percentage());
-                        }
+                        Some(f) => widgets::progress(ui, *f, 96.0),
                         None => {
-                            ui.spinner();
+                            ui.add(egui::Spinner::new().size(12.0).color(p.ink_muted));
                         }
                     }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if !self.selected.is_empty() {
-                        ui.weak(format!("{} selected", self.selected.len()));
+                        note(ui, format!("{} selected", self.selected.len()));
                     }
                     if !self.cut.is_empty() {
-                        ui.weak(format!("✂ {} to move", self.cut.len()));
+                        note(ui, format!("✂ {} to move", self.cut.len()));
                     }
                 });
             });
@@ -1517,24 +1599,45 @@ impl App {
     }
 
     fn file_table(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let p = theme::of(ui);
         let show_location = self.is_searching() || !matches!(self.view, View::MyDrive | View::Folder(_));
         let in_trash = self.view == View::Trash;
+        // Uploads into the folder on screen (running or failed) are listed above its files.
+        let here = if self.is_searching() { None } else { self.current_folder() };
+        let pending: Vec<Pending> = match &here {
+            Some(folder) => self
+                .transfers
+                .iter()
+                .filter(|(_, info, _)| info.upload && info.target == *folder)
+                .map(|(_, info, frac)| Pending::Uploading(info, *frac))
+                .chain(
+                    self.failed
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (info, _))| info.upload && info.target == *folder)
+                        .map(|(i, (info, err))| Pending::Failed(i, info, err)),
+                )
+                .collect(),
+            None => Vec::new(),
+        };
+        let n_pending = pending.len();
         let n = self.rows.len();
-        if n == 0 {
-            ui.add_space(40.0);
+        if n + n_pending == 0 {
+            ui.add_space(theme::SPACE_12);
             ui.vertical_centered(|ui| {
                 if !self.cache_loaded {
-                    ui.spinner();
+                    ui.add(egui::Spinner::new().color(p.ink_muted));
                 } else if self.is_searching() {
-                    ui.weak("No matches in the local index.");
-                    if ui.button("Search file contents on Drive").clicked() {
+                    ui.label(RichText::new("No matches in the local index.").weak());
+                    ui.add_space(theme::SPACE_2);
+                    if ui.add(Button::secondary("Search file contents on Drive")).clicked() {
                         actions.push(Action::ContentSearch);
                     }
                 } else if matches!(self.sync, SyncState::Initial { .. }) {
-                    ui.spinner();
-                    ui.weak("Building local index…");
+                    ui.add(egui::Spinner::new().color(p.ink_muted));
+                    ui.label(RichText::new("Building local index…").weak());
                 } else {
-                    ui.weak("Empty");
+                    ui.label(RichText::new("Empty").weak());
                 }
             });
             return;
@@ -1545,198 +1648,325 @@ impl App {
         if scroll_to.is_some() {
             self.scroll_to_cursor = false;
         }
+        let row_h = if self.settings.compact_rows { theme::ROW_COMPACT } else { theme::ROW_DEFAULT };
         let sort = self.sort;
         let arrow = |k: SortKey| match sort {
-            Some((s, desc)) if s == k => if desc { " ⏷" } else { " ⏶" },
+            Some((s, desc)) if s == k => if desc { " ↓" } else { " ↑" },
             _ => "",
         };
+        let header_text = |text: String| RichText::new(text).font(theme::semibold_font(theme::FONT_UI_SMALL)).color(p.ink_muted);
         let drop_hover = self.drop_hover.as_ref().map(|h| h.0.clone());
         let mut targets: Vec<DropTarget> = Vec::new();
         let ctrl_held = ui.input(|i| i.modifiers.command);
         let shift_held = ui.input(|i| i.modifiers.shift);
-        // Name is the non-resizable `remainder` column: egui_extras only re-fits such columns
-        // to the available width, so the listing always fills the window. The other columns
-        // stay resizable.
-        let mut table = TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::remainder().at_least(220.0).clip(true).resizable(false));
-        if show_location {
-            table = table.column(Column::initial(280.0).at_least(80.0).clip(true));
-        }
-        table = table.column(Column::initial(120.0).at_least(70.0)).column(Column::initial(80.0).at_least(50.0));
-        if let Some(r) = scroll_to {
-            table = table.scroll_to_row(r, None);
-        }
-        table
-            .header(22.0, |mut h| {
-                h.col(|ui| {
-                    if ui.add(egui::Button::new(RichText::new(format!("Name{}", arrow(SortKey::Name))).strong()).frame(false)).clicked() {
-                        actions.push(Action::Sort(SortKey::Name));
-                    }
-                });
-                if show_location {
+        // Row fills span the whole pane, including its side padding.
+        let full_x = ui.max_rect().x_range().expand(theme::SPACE_3);
+        let row_bg = |ui: &egui::Ui, selected: bool, drop: bool| {
+            let clip = egui::Rect::from_x_y_ranges(full_x, ui.clip_rect().y_range());
+            let rect = egui::Rect::from_x_y_ranges(full_x, ui.max_rect().y_range());
+            let hovered = ui.ctx().rect_contains_pointer(ui.layer_id(), clip.intersect(rect));
+            let mut painter = ui.painter().clone();
+            painter.set_clip_rect(clip);
+            widgets::paint_row(&painter, rect, selected, hovered, drop);
+        };
+        ui.scope(|ui| {
+            // Rows are exactly ROW_DEFAULT / ROW_COMPACT tall, columns `space-3` apart.
+            ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_3, 0.0);
+            // Rows paint their own hover/selection and hairline (widgets::paint_row), and
+            // column-resize handles only show on hover.
+            ui.visuals_mut().widgets.hovered.bg_fill = egui::Color32::TRANSPARENT;
+            ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+            // Name is the non-resizable `remainder` column: egui_extras only re-fits such
+            // columns to the available width, so the listing always fills the window. The
+            // other columns stay resizable.
+            let mut table = TableBuilder::new(ui)
+                .striped(false)
+                .resizable(true)
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(Column::remainder().at_least(220.0).clip(true).resizable(false));
+            if show_location {
+                table = table.column(Column::initial(260.0).at_least(80.0).clip(true));
+            }
+            table = table
+                .column(Column::initial(120.0).at_least(80.0).clip(true))
+                .column(Column::initial(120.0).at_least(70.0).clip(true))
+                .column(Column::initial(80.0).at_least(50.0));
+            if let Some(r) = scroll_to {
+                table = table.scroll_to_row(r + n_pending, None);
+            }
+            table
+                .header(theme::ROW_COMPACT, |mut h| {
                     h.col(|ui| {
-                        ui.strong("Location");
-                    });
-                }
-                h.col(|ui| {
-                    if ui.add(egui::Button::new(RichText::new(format!("Modified{}", arrow(SortKey::Modified))).strong()).frame(false)).clicked() {
-                        actions.push(Action::Sort(SortKey::Modified));
-                    }
-                });
-                h.col(|ui| {
-                    if ui.add(egui::Button::new(RichText::new(format!("Size{}", arrow(SortKey::Size))).strong()).frame(false)).clicked() {
-                        actions.push(Action::Sort(SortKey::Size));
-                    }
-                });
-            })
-            .body(|body| {
-                body.rows(ROW_H, n, |mut row| {
-                    let e = &self.index.entries[self.rows[row.index()]];
-                    let f = &e.file;
-                    let is_sel = self.selected.contains(&f.id);
-                    let is_cursor = self.cursor.as_deref() == Some(f.id.as_str());
-                    let folder_target = f.folder_target().map(str::to_string);
-                    let drop_here = folder_target.is_some() && folder_target == drop_hover;
-                    row.set_selected(drop_here || is_sel || (is_cursor && self.selected.is_empty()));
-                    row.col(|ui| {
-                        ui.label(e.kind.icon());
-                        let mut name = RichText::new(&f.name);
-                        if e.kind == Kind::Folder {
-                            name = name.strong();
-                        }
-                        if self.cut.iter().any(|(id, _)| *id == f.id) {
-                            name = name.italics().weak();
-                        }
-                        ui.add(egui::Label::new(name).truncate());
-                        if f.starred {
-                            ui.label(RichText::new("★").color(theme::of(ui).ink_muted));
-                        }
-                        if f.shared {
-                            ui.weak("👥");
-                        }
-                        if let Some(lc) = self.local.get(&f.id) {
-                            if lc.outdated(f) {
-                                ui.label(RichText::new("💾").color(ui.visuals().warn_fg_color)).on_hover_text(format!(
-                                    "Downloaded to {}\nDrive has a newer version (Ctrl+S to update)",
-                                    lc.path.display()
-                                ));
-                            } else {
-                                ui.label(RichText::new("💾").color(theme::of(ui).success))
-                                    .on_hover_text(format!("Downloaded to {}\nDouble-click opens it", lc.path.display()));
-                            }
+                        row_bg(ui, false, false);
+                        if ui.add(egui::Button::new(header_text(format!("Name{}", arrow(SortKey::Name)))).frame(false)).clicked() {
+                            actions.push(Action::Sort(SortKey::Name));
                         }
                     });
                     if show_location {
-                        row.col(|ui| {
-                            ui.add(egui::Label::new(RichText::new(&*e.path).weak()).truncate());
+                        h.col(|ui| {
+                            ui.label(header_text("Location".into()));
                         });
                     }
-                    row.col(|ui| {
-                        ui.weak(fmt_time(f.modified_time.as_deref()));
+                    h.col(|ui| {
+                        ui.label(header_text("Owner".into()));
                     });
-                    row.col(|ui| {
-                        if let Some(s) = f.size_bytes() {
-                            ui.weak(fmt_size(s));
-                        } else {
-                            ui.weak("—");
+                    h.col(|ui| {
+                        if ui.add(egui::Button::new(header_text(format!("Modified{}", arrow(SortKey::Modified)))).frame(false)).clicked() {
+                            actions.push(Action::Sort(SortKey::Modified));
                         }
                     });
-                    let resp = row.response();
-                    if let Some(t) = folder_target {
-                        targets.push((resp.rect, t, f.name.clone()));
-                    }
-                    if resp.clicked() {
-                        actions.push(Action::Click { id: f.id.clone(), ctrl: ctrl_held, shift: shift_held });
-                    }
-                    if resp.double_clicked() {
-                        actions.push(Action::Open(f.id.clone()));
-                    }
-                    if resp.secondary_clicked() && !is_sel {
-                        actions.push(Action::Click { id: f.id.clone(), ctrl: false, shift: false });
-                    }
-                    let is_folder = f.folder_target().is_some();
-                    let has_local = self.local.get(&f.id).is_some_and(|l| l.path.exists());
-                    resp.context_menu(|ui| {
-                        ui.set_min_width(220.0);
-                        let mut item = |ui: &mut egui::Ui, label: &str, hint: &str, a: Action| {
-                            let b = egui::Button::new(label).shortcut_text(hint);
-                            if ui.add(b).clicked() {
-                                actions.push(a);
-                                ui.close();
+                    h.col(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add_space(theme::SPACE_2); // clear of the floating scroll bar
+                            if ui.add(egui::Button::new(header_text(format!("Size{}", arrow(SortKey::Size)))).frame(false)).clicked() {
+                                actions.push(Action::Sort(SortKey::Size));
                             }
-                        };
-                        let open_label = if is_folder {
-                            "📂 Open"
-                        } else if has_local {
-                            "↗ Open local copy"
-                        } else {
-                            "↗ Open"
-                        };
-                        item(ui, open_label, "Enter", Action::Open(f.id.clone()));
-                        item(ui, "🌐 Open in browser", "Ctrl+O", Action::OpenInBrowser);
-                        if has_local {
-                            item(ui, "🗁 Show local file", "", Action::ShowLocal(f.id.clone()));
+                        });
+                    });
+                })
+                .body(|body| {
+                    body.rows(row_h, n_pending + n, |mut row| {
+                        if row.index() < n_pending {
+                            let item = &pending[row.index()];
+                            let (info, failed) = match item {
+                                Pending::Uploading(info, _) => (*info, None),
+                                Pending::Failed(i, info, err) => (*info, Some((*i, *err))),
+                            };
+                            row.col(|ui| {
+                                row_bg(ui, false, false);
+                                ui.label(RichText::new(Kind::Other.icon()).color(p.ink_muted));
+                                ui.add(egui::Label::new(RichText::new(&info.name).color(p.ink)).truncate());
+                            });
+                            if show_location {
+                                row.col(|_| {});
+                            }
+                            row.col(|ui| match item {
+                                Pending::Uploading(_, Some(f)) => widgets::progress(ui, *f, 64.0),
+                                Pending::Uploading(_, None) => {
+                                    ui.add(egui::Spinner::new().size(12.0).color(p.ink_muted));
+                                }
+                                Pending::Failed(_, _, err) => {
+                                    ui.label(RichText::new("Failed").font(theme::semibold_font(theme::FONT_UI_SMALL)).color(p.danger))
+                                        .on_hover_text(*err);
+                                }
+                            });
+                            row.col(|ui| match failed {
+                                Some((i, _)) => {
+                                    if ui.link(widgets::mono_small("Retry")).clicked() {
+                                        actions.push(Action::RetryUpload(i));
+                                    }
+                                }
+                                None => {
+                                    ui.label(widgets::mono_small("Uploading").color(p.ink_muted));
+                                }
+                            });
+                            row.col(|ui| {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.add_space(theme::SPACE_2);
+                                    ui.label(widgets::mono_small(info.size.map(fmt_size).unwrap_or_else(|| "—".into())).color(p.ink_muted));
+                                });
+                            });
+                            if let Some((i, err)) = failed {
+                                row.response().on_hover_text(err).context_menu(|ui| {
+                                    ui.set_min_width(200.0);
+                                    if ui.button("Retry upload").clicked() {
+                                        actions.push(Action::RetryUpload(i));
+                                        ui.close();
+                                    }
+                                    if ui.button("Dismiss").clicked() {
+                                        actions.push(Action::DismissFailed(i));
+                                        ui.close();
+                                    }
+                                });
+                            }
+                            return;
                         }
+                        let e = &self.index.entries[self.rows[row.index() - n_pending]];
+                        let f = &e.file;
+                        let is_sel = self.selected.contains(&f.id);
+                        let is_cursor = self.cursor.as_deref() == Some(f.id.as_str());
+                        let folder_target = f.folder_target().map(str::to_string);
+                        let drop_here = folder_target.is_some() && folder_target == drop_hover;
+                        let selected = is_sel || (is_cursor && self.selected.is_empty());
+                        let transfer = self.transfers.iter().find(|(_, t, _)| !t.upload && t.target == f.id);
+                        let failure = self.failed.iter().find(|(t, _)| !t.upload && t.target == f.id);
+                        row.col(|ui| {
+                            row_bg(ui, selected, drop_here);
+                            let icon_color = if e.kind == Kind::Folder { p.brand } else if selected { p.ink } else { p.ink_muted };
+                            ui.label(RichText::new(e.kind.icon()).color(icon_color));
+                            let mut name = RichText::new(&f.name).color(p.ink);
+                            if self.cut.iter().any(|(id, _)| *id == f.id) {
+                                name = name.italics().color(p.ink_muted);
+                            }
+                            ui.add(egui::Label::new(name).truncate());
+                            if f.starred {
+                                ui.label(RichText::new("★").color(p.ink_muted));
+                            }
+                            if f.shared {
+                                ui.label(RichText::new("👥").color(p.ink_muted));
+                            }
+                            if let Some(lc) = self.local.get(&f.id) {
+                                if lc.outdated(f) {
+                                    ui.label(RichText::new("💾").color(p.warning)).on_hover_text(format!(
+                                        "Downloaded to {}\nDrive has a newer version (Ctrl+S to update)",
+                                        lc.path.display()
+                                    ));
+                                } else {
+                                    ui.label(RichText::new("💾").color(p.success))
+                                        .on_hover_text(format!("Downloaded to {}\nDouble-click opens it", lc.path.display()));
+                                }
+                            }
+                        });
                         if show_location {
-                            item(ui, "📍 Show in folder", "Ctrl+Enter", Action::Reveal(f.id.clone()));
+                            row.col(|ui| {
+                                ui.add(egui::Label::new(widgets::mono_small(&*e.path).color(p.ink_muted)).truncate());
+                            });
                         }
-                        ui.separator();
-                        item(ui, "🔗 Copy link", "Ctrl+C", Action::CopyLink);
-                        if !is_folder && !f.is_google_native() {
-                            item(ui, "⬇ Copy direct download link", "Ctrl+Shift+D", Action::CopyDownloadLink);
+                        row.col(|ui| {
+                            if let Some((_, _, frac)) = transfer {
+                                match frac {
+                                    Some(fr) => widgets::progress(ui, *fr, 64.0),
+                                    None => {
+                                        ui.add(egui::Spinner::new().size(12.0).color(p.ink_muted));
+                                    }
+                                }
+                            } else if let Some((_, err)) = failure {
+                                ui.label(RichText::new("Failed").font(theme::semibold_font(theme::FONT_UI_SMALL)).color(p.danger))
+                                    .on_hover_text(err);
+                            } else {
+                                let owner = if f.drive_id.is_some() {
+                                    "Shared drive"
+                                } else if f.owned_by_me {
+                                    "Me"
+                                } else {
+                                    "Shared with me"
+                                };
+                                ui.add(egui::Label::new(RichText::new(owner).small().color(p.ink_muted)).truncate());
+                            }
+                        });
+                        row.col(|ui| {
+                            let text = if transfer.is_some() {
+                                "Downloading".to_string()
+                            } else if failure.is_some() {
+                                "Not downloaded".to_string()
+                            } else {
+                                fmt_time(f.modified_time.as_deref())
+                            };
+                            ui.label(widgets::mono_small(text).color(p.ink_muted));
+                        });
+                        row.col(|ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_space(theme::SPACE_2);
+                                let size = f.size_bytes().map(fmt_size).unwrap_or_else(|| "—".into());
+                                ui.label(widgets::mono_small(size).color(p.ink_muted));
+                            });
+                        });
+                        let resp = row.response();
+                        if let Some(t) = folder_target {
+                            targets.push((resp.rect, t, f.name.clone()));
                         }
-                        item(ui, "🌍 Share: anyone with link + copy", "Ctrl+Shift+S", Action::Share);
-                        item(ui, "Copy name", "", Action::CopyName);
-                        item(ui, "Copy ID", "", Action::CopyId);
-                        ui.separator();
-                        if !is_folder {
-                            item(ui, if has_local { "💾 Update local copy" } else { "💾 Download" }, "Ctrl+S", Action::Download);
+                        if resp.clicked() {
+                            actions.push(Action::Click { id: f.id.clone(), ctrl: ctrl_held, shift: shift_held });
                         }
-                        if has_local {
-                            item(ui, "Forget local copy", "", Action::ForgetLocal(f.id.clone()));
+                        if resp.double_clicked() {
+                            actions.push(Action::Open(f.id.clone()));
                         }
-                        item(ui, "✏ Rename", "F2", Action::Rename);
-                        item(ui, if f.starred { "☆ Unstar" } else { "★ Star" }, "", Action::Star(!f.starred));
-                        item(ui, "✂ Cut (move)", "Ctrl+X", Action::Cut);
-                        if let Some(t) = f.folder_target() {
-                            item(ui, "📌 Open this folder at startup", "", Action::SetStartFolder(t.to_string()));
+                        if resp.secondary_clicked() && !is_sel {
+                            actions.push(Action::Click { id: f.id.clone(), ctrl: false, shift: false });
                         }
-                        if in_trash {
-                            item(ui, "♻ Restore", "Del", Action::Trash(false));
-                        } else {
-                            item(ui, "🗑 Move to trash", "Del", Action::Trash(true));
-                        }
+                        let is_folder = f.folder_target().is_some();
+                        let has_local = self.local.get(&f.id).is_some_and(|l| l.path.exists());
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(240.0);
+                            let mut item = |ui: &mut egui::Ui, label: RichText, hint: &str, a: Action| {
+                                let b = egui::Button::new(label).shortcut_text(widgets::mono_small(hint).color(p.ink_muted));
+                                if ui.add(b).clicked() {
+                                    actions.push(a);
+                                    ui.close();
+                                }
+                            };
+                            let open_label = if is_folder {
+                                "📂 Open"
+                            } else if has_local {
+                                "↗ Open local copy"
+                            } else {
+                                "↗ Open"
+                            };
+                            let t = |s: &str| RichText::new(s).color(p.ink);
+                            item(ui, t(open_label), "Enter", Action::Open(f.id.clone()));
+                            item(ui, t("🌐 Open in browser"), "Ctrl+O", Action::OpenInBrowser);
+                            if has_local {
+                                item(ui, t("🗁 Show local file"), "", Action::ShowLocal(f.id.clone()));
+                            }
+                            if show_location {
+                                item(ui, t("📍 Show in folder"), "Ctrl+Enter", Action::Reveal(f.id.clone()));
+                            }
+                            ui.separator();
+                            item(ui, t("🔗 Copy link"), "Ctrl+C", Action::CopyLink);
+                            if !is_folder && !f.is_google_native() {
+                                item(ui, t("⬇ Copy direct download link"), "Ctrl+Shift+D", Action::CopyDownloadLink);
+                            }
+                            item(ui, t("🌍 Share: anyone with link + copy"), "Ctrl+Shift+S", Action::Share);
+                            item(ui, t("Copy name"), "", Action::CopyName);
+                            item(ui, t("Copy ID"), "", Action::CopyId);
+                            ui.separator();
+                            if !is_folder {
+                                item(ui, t(if has_local { "💾 Update local copy" } else { "💾 Download" }), "Ctrl+S", Action::Download);
+                            }
+                            if has_local {
+                                item(ui, t("Forget local copy"), "", Action::ForgetLocal(f.id.clone()));
+                            }
+                            item(ui, t("✏ Rename"), "F2", Action::Rename);
+                            item(ui, t(if f.starred { "☆ Unstar" } else { "★ Star" }), "", Action::Star(!f.starred));
+                            item(ui, t("✂ Cut (move)"), "Ctrl+X", Action::Cut);
+                            if let Some(t2) = f.folder_target() {
+                                item(ui, t("📌 Open this folder at startup"), "", Action::SetStartFolder(t2.to_string()));
+                            }
+                            if in_trash {
+                                item(ui, t("♻ Restore"), "Del", Action::Trash(false));
+                            } else {
+                                item(ui, RichText::new("🗑 Move to trash").color(p.danger), "Del", Action::Trash(true));
+                            }
+                        });
                     });
                 });
-            });
+        });
         self.drop_targets.extend(targets);
+    }
+
+    /// A modal dialog in the Dray style: `surface-raised`, `radius-lg`, `shadow-popover`,
+    /// `space-8` padding.
+    fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+        let p = theme::of_ctx(ctx);
+        egui::Modal::new(Id::unique(id))
+            .frame(egui::Frame::window(&ctx.global_style()))
+            .backdrop_color(p.shadow_popover.color)
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         if let Some((id, mut name)) = self.rename.take() {
             let mut keep = true;
-            let r = egui::Modal::new(Id::unique("rename")).show(ctx, |ui| {
+            let r = Self::modal(ctx, "rename").show(ctx, |ui| {
                 ui.set_width(380.0);
                 ui.heading("Rename");
-                let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY));
+                ui.add_space(theme::SPACE_4);
+                let resp = ui.add(text_input(&mut name).desired_width(f32::INFINITY));
                 if self.dialog_focus {
                     resp.request_focus();
                     // Select the name without extension.
                     self.dialog_focus = false;
                 }
                 let enter = ui.input(|i| i.key_pressed(Key::Enter));
-                ui.horizontal(|ui| {
-                    if ui.button("Rename").clicked() || enter {
+                ui.add_space(theme::SPACE_6);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(Button::primary("Rename")).clicked() || enter {
                         if !name.trim().is_empty() {
                             self.backend.rename(id.clone(), name.trim().to_string());
                         }
                         keep = false;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.add(Button::secondary("Cancel")).clicked() {
                         keep = false;
                     }
                 });
@@ -1752,23 +1982,25 @@ impl App {
         }
         if let Some(mut name) = self.new_folder.take() {
             let mut keep = true;
-            let r = egui::Modal::new(Id::unique("newfolder")).show(ctx, |ui| {
+            let r = Self::modal(ctx, "newfolder").show(ctx, |ui| {
                 ui.set_width(380.0);
                 ui.heading("New folder");
-                let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY));
+                ui.add_space(theme::SPACE_4);
+                let resp = ui.add(text_input(&mut name).desired_width(f32::INFINITY));
                 if self.dialog_focus {
                     resp.request_focus();
                     self.dialog_focus = false;
                 }
                 let enter = ui.input(|i| i.key_pressed(Key::Enter));
-                ui.horizontal(|ui| {
-                    if ui.button("Create").clicked() || enter {
+                ui.add_space(theme::SPACE_6);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(Button::primary("Create")).clicked() || enter {
                         if let (false, Some(parent)) = (name.trim().is_empty(), self.upload_target()) {
                             self.backend.create_folder(name.trim().to_string(), parent);
                         }
                         keep = false;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.add(Button::secondary("Cancel")).clicked() {
                         keep = false;
                     }
                 });
@@ -1782,27 +2014,70 @@ impl App {
                 self.focus_search = true;
             }
         }
-        if self.settings_open {
-            let mut open = true;
-            egui::Window::new("Settings").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
-                let mut changed = false;
-                changed |= ui.checkbox(&mut self.settings.copy_link_after_upload, "Copy link after uploading a single file").changed();
-                ui.horizontal(|ui| {
-                    ui.label("Check for changes every");
-                    if ui.add(egui::DragValue::new(&mut self.settings.poll_seconds).range(5..=600).suffix(" s")).changed() {
-                        self.backend.set_poll_secs(self.settings.poll_seconds);
-                        changed = true;
+        if self.about_open {
+            let mut close = false;
+            let r = Self::modal(ctx, "about").show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.vertical_centered(|ui| {
+                    ui.heading("Dray");
+                    ui.horizontal(|ui| {
+                        // Centre the version line.
+                        let version = env!("CARGO_PKG_VERSION");
+                        let w = 60.0 + version.len() as f32 * 7.2;
+                        ui.add_space((ui.available_width() - w).max(0.0) / 2.0);
+                        ui.label(RichText::new("Version").small().weak());
+                        ui.label(widgets::mono_small(version).weak());
+                    });
+                    ui.add_space(theme::SPACE_4);
+                    ui.label("A fast, native desktop client for Google Drive.");
+                    ui.add_space(theme::SPACE_2);
+                    ui.label(
+                        RichText::new("Dray is an independent project and is not affiliated with or endorsed by Google.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(theme::SPACE_4);
+                    ui.label(RichText::new("Monospace type: JetBrains Mono (OFL 1.1).").small().weak());
+                    ui.add_space(theme::SPACE_6);
+                    if ui.add(Button::secondary("Close")).clicked() {
+                        close = true;
                     }
                 });
+            });
+            if close || r.should_close() {
+                self.about_open = false;
+            }
+        }
+        if self.settings_open {
+            let mut open = true;
+            egui::Window::new("Settings")
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                ui.set_width(500.0);
                 ui.horizontal(|ui| {
-                    ui.label("Theme");
+                    ui.heading("Settings");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(Button::ghost("✕")).on_hover_text("Close").clicked() {
+                            open = false;
+                        }
+                    });
+                });
+                ui.add_space(theme::SPACE_4);
+                let mut changed = false;
+                widgets::section_label(ui, "General");
+                ui.add_space(theme::SPACE_2);
+                egui::Grid::new("settings-grid").num_columns(2).spacing([theme::SPACE_4, theme::SPACE_2]).show(ui, |ui| {
+                    ui.label(RichText::new("Theme").weak());
                     let mut dm = self.settings.dark_mode;
                     egui::ComboBox::from_id_salt("theme")
                         .selected_text(match dm { None => "System", Some(true) => "Dark", Some(false) => "Light" })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut dm, None, "System");
-                            ui.selectable_value(&mut dm, Some(true), "Dark");
                             ui.selectable_value(&mut dm, Some(false), "Light");
+                            ui.selectable_value(&mut dm, Some(true), "Dark");
                         });
                     if dm != self.settings.dark_mode {
                         self.settings.dark_mode = dm;
@@ -1813,57 +2088,99 @@ impl App {
                             None => ctx.set_theme(egui::ThemePreference::System),
                         }
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Open at startup");
-                    let current = self.settings.start_view.as_deref().and_then(View::from_setting).unwrap_or(View::MyDrive);
-                    ui.strong(self.view_label(&current));
-                    if self.view != current && ui.button(format!("Use “{}”", self.view_label(&self.view))).clicked() {
-                        self.settings.start_view = Some(self.view.to_setting());
-                        changed = true;
-                    }
-                    if self.settings.start_view.is_some() && ui.button("Default").clicked() {
-                        self.settings.start_view = None;
-                        changed = true;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Download to");
-                    let dir = self.download_dir();
-                    ui.monospace(dir.display().to_string());
-                    if ui.button("Change…").clicked() {
-                        let tx = self.ui_tx.clone();
-                        let ctx = ctx.clone();
-                        std::thread::spawn(move || {
-                            if let Some(p) = rfd::FileDialog::new().set_directory(&dir).pick_folder() {
-                                let _ = tx.send(UiMsg::DownloadDir(p));
-                                ctx.request_repaint();
-                            }
+                    ui.end_row();
+
+                    ui.label(RichText::new("Row density").weak());
+                    let mut compact = self.settings.compact_rows;
+                    egui::ComboBox::from_id_salt("density")
+                        .selected_text(if compact { "Compact" } else { "Default" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut compact, false, "Default");
+                            ui.selectable_value(&mut compact, true, "Compact");
                         });
-                    }
-                    if self.settings.download_dir.is_some() && ui.button("Default").clicked() {
-                        self.settings.download_dir = None;
+                    if compact != self.settings.compact_rows {
+                        self.settings.compact_rows = compact;
                         changed = true;
                     }
+                    ui.end_row();
+
+                    ui.label(RichText::new("Open at startup").weak());
+                    ui.horizontal(|ui| {
+                        let current = self.settings.start_view.as_deref().and_then(View::from_setting).unwrap_or(View::MyDrive);
+                        ui.label(self.view_label(&current));
+                        if self.view != current && ui.add(Button::secondary(format!("Use “{}”", self.view_label(&self.view)))).clicked() {
+                            self.settings.start_view = Some(self.view.to_setting());
+                            changed = true;
+                        }
+                        if self.settings.start_view.is_some() && ui.add(Button::ghost("Default")).clicked() {
+                            self.settings.start_view = None;
+                            changed = true;
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label(RichText::new("Download to").weak());
+                    ui.horizontal(|ui| {
+                        let dir = self.download_dir();
+                        ui.add(egui::Label::new(widgets::mono_small(dir.display().to_string())).truncate())
+                            .on_hover_text(dir.display().to_string());
+                        if ui.add(Button::secondary("Change…")).clicked() {
+                            let tx = self.ui_tx.clone();
+                            let ctx = ctx.clone();
+                            std::thread::spawn(move || {
+                                if let Some(p) = rfd::FileDialog::new().set_directory(&dir).pick_folder() {
+                                    let _ = tx.send(UiMsg::DownloadDir(p));
+                                    ctx.request_repaint();
+                                }
+                            });
+                        }
+                        if self.settings.download_dir.is_some() && ui.add(Button::ghost("Default")).clicked() {
+                            self.settings.download_dir = None;
+                            changed = true;
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label(RichText::new("Check for changes every").weak());
+                    if ui.add(egui::DragValue::new(&mut self.settings.poll_seconds).range(5..=600).suffix(" s")).changed() {
+                        self.backend.set_poll_secs(self.settings.poll_seconds);
+                        changed = true;
+                    }
+                    ui.end_row();
+
+                    ui.label("");
+                    changed |= ui.checkbox(&mut self.settings.copy_link_after_upload, "Copy link after uploading a single file").changed();
+                    ui.end_row();
                 });
                 if changed {
                     self.settings.save(&self.paths);
                 }
+                ui.add_space(theme::SPACE_4);
                 ui.separator();
-                ui.label(format!("{} items in local index (built in {:.0} ms)", self.files.len(), self.build_cost.as_secs_f64() * 1000.0));
+                ui.add_space(theme::SPACE_2);
+                widgets::section_label(ui, "Local index");
+                ui.add_space(theme::SPACE_2);
                 ui.horizontal(|ui| {
-                    if ui.button("Rebuild cache").on_hover_text("Re-list everything from Drive").clicked() {
+                    ui.spacing_mut().item_spacing.x = theme::SPACE_1;
+                    ui.label(widgets::mono_small(self.files.len().to_string()));
+                    ui.label("items, built in");
+                    ui.label(widgets::mono_small(format!("{:.0} ms", self.build_cost.as_secs_f64() * 1000.0)));
+                });
+                ui.add_space(theme::SPACE_2);
+                ui.horizontal(|ui| {
+                    if ui.add(Button::secondary("Rebuild cache")).on_hover_text("Re-list everything from Drive").clicked() {
                         self.backend.rebuild_cache();
                         self.toast("Rebuilding local index…", false);
                     }
-                    if ui.button("Sign out").clicked() {
+                    if ui.add(Button::danger("Sign out")).clicked() {
                         self.backend.sign_out();
                         self.settings_open = false;
                     }
                 });
+                ui.add_space(theme::SPACE_4);
                 ui.separator();
                 ui.collapsing("Keyboard shortcuts", |ui| {
-                    egui::Grid::new("keys").num_columns(2).striped(true).show(ui, |ui| {
+                    egui::Grid::new("keys").num_columns(2).spacing([theme::SPACE_4, theme::SPACE_2]).show(ui, |ui| {
                         for (k, d) in [
                             ("Ctrl+F / Ctrl+K", "Focus search (or just start typing)"),
                             ("Ctrl+Shift+F", "Search only the open folder (toggle)"),
@@ -1886,7 +2203,7 @@ impl App {
                             ("Esc", "Clear search"),
                             ("F5 / Ctrl+R", "Sync now"),
                         ] {
-                            ui.monospace(k);
+                            widgets::key_hint(ui, k);
                             ui.label(d);
                             ui.end_row();
                         }
@@ -1908,20 +2225,24 @@ impl App {
         let next = self.toasts.iter().map(|t| t.until).min().unwrap();
         ctx.request_repaint_after(next - now);
         egui::Area::new(Id::unique("toasts"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -40.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-theme::SPACE_4, -(theme::SPACE_12 + theme::SPACE_1)))
             .order(egui::Order::Foreground)
             .interactable(false)
             .show(ctx, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
+                    ui.spacing_mut().item_spacing.y = theme::SPACE_2;
                     for t in self.toasts.iter().rev() {
-                        let v = ui.visuals();
-                        let _ = v;
-                        let p = theme::of(ui);
-                        let color = if t.error { p.danger } else { p.ink };
-                        egui::Frame::popup(ui.style()).fill(p.surface_raised).show(ui, |ui| {
-                            ui.set_max_width(460.0);
-                            ui.colored_label(color, &t.text);
-                        });
+                        egui::Frame::popup(ui.style())
+                            .inner_margin(egui::Margin::symmetric(theme::SPACE_3 as i8, theme::SPACE_2 as i8))
+                            .show(ui, |ui| {
+                                ui.set_max_width(460.0);
+                                ui.horizontal(|ui| {
+                                    if t.error {
+                                        widgets::status_pill(ui, Status::Failed);
+                                    }
+                                    ui.add(egui::Label::new(RichText::new(&t.text).color(theme::of(ui).ink)).wrap());
+                                });
+                            });
                     }
                 });
             });
@@ -1984,7 +2305,7 @@ impl App {
                 }
                 None => {
                     painter.rect_filled(screen, 0.0, p.brand_subtle.gamma_multiply(0.5));
-                    painter.rect_stroke(screen.shrink(3.0), 6.0, egui::Stroke::new(3.0, accent), egui::StrokeKind::Inside);
+                    painter.rect_stroke(screen.shrink(3.0), theme::RADIUS_LG, egui::Stroke::new(2.0, accent), egui::StrokeKind::Inside);
                 }
             }
             let text = match &target {
@@ -1996,7 +2317,7 @@ impl App {
                 egui::pos2(screen.center().x, screen.bottom() - 60.0),
                 galley.size() + egui::vec2(32.0, 18.0),
             );
-            painter.rect_filled(pill, 18.0, accent);
+            painter.rect_filled(pill, theme::RADIUS_LG, accent);
             painter.galley(pill.center() - galley.size() / 2.0, galley, p.on_brand);
         }
         if !dropped.is_empty() {
@@ -2040,11 +2361,22 @@ impl eframe::App for App {
         self.status_bar(ui);
         self.sidebar(ui, &mut actions);
         self.top_bar(ui, &mut actions);
-        egui::CentralPanel::default().show(ui, |ui| {
+        let p = theme::of(ui);
+        let list = egui::Frame::new().fill(p.surface_raised).inner_margin(egui::Margin::symmetric(theme::SPACE_3 as i8, 0));
+        egui::CentralPanel::default().frame(list).show(ui, |ui| {
             self.file_table(ui, &mut actions);
         });
         self.dialogs(&ctx);
         self.toasts_ui(&ctx);
+        ctx.input(|i| {
+            if i.key_pressed(Key::Tab) {
+                self.keyboard_focus = true;
+            }
+            if i.pointer.any_pressed() {
+                self.keyboard_focus = false;
+            }
+        });
+        widgets::focus_ring(&ctx, self.keyboard_focus);
         for a in actions {
             self.apply(&ctx, a);
         }
@@ -2053,6 +2385,11 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
     }
+}
+
+/// Single-line input: 28 px tall with the control padding.
+fn text_input(text: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text).margin(egui::vec2(theme::SPACE_2, 5.0))
 }
 
 fn search_id() -> Id {

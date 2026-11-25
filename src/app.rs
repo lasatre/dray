@@ -288,16 +288,29 @@ impl App {
 
     /// `DRAY_DEMO=1`: fill the index with synthetic files (UI / performance testing, no network).
     fn load_demo(&mut self) {
-        let words = ["Report", "Budget", "Photo", "Invoice", "Draft", "Final", "Meeting", "Notes", "Plan", "Design"];
+        let words = ["Report", "Budget", "Photo", "Invoice", "Draft", "Summary", "Meeting", "Notes", "Plan", "Design"];
+        let folders = ["Budgets", "Contracts", "Design", "Invoices", "Meeting notes", "Photos", "Plans", "Receipts", "Reports", "Taxes"];
         let exts = ["pdf", "docx", "xlsx", "png", "jpg", "mp4", "zip", "txt", "rs", "pptx"];
         let n: u32 = std::env::var("DRAY_DEMO").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 1).unwrap_or(50_000);
         let files = Arc::make_mut(&mut self.files);
         for i in 0..n {
             let folder = i < n / 50;
-            let parent = if i < 40 { "root".to_string() } else { format!("d{}", i % (n / 50).max(1)) };
+            // My Drive gets the first 12 folders and a handful of files.
+            let in_root = (folder && i < 12) || (!folder && i % 257 == 0);
+            let parent = if in_root {
+                "root".to_string()
+            } else if folder {
+                format!("d{}", i % 12) // second level, under a My Drive folder
+            } else {
+                format!("d{}", i % (n / 50).max(1))
+            };
             let w = words[(i % 10) as usize];
             let w2 = words[(i / 10 % 10) as usize];
-            let name = if folder { format!("{w} {w2} {i}") } else { format!("{w}_{w2}-{i}.{}", exts[(i / 3 % 10) as usize]) };
+            let name = if folder {
+                format!("{} {}", folders[(i % 10) as usize], 2026 - i / 10 % 8)
+            } else {
+                format!("{w} {} {i}.{}", w2.to_lowercase(), exts[(i / 3 % 10) as usize])
+            };
             let day = 1 + i % 28;
             let month = 1 + i / 28 % 12;
             let year = 2026 - (i / 336 % 8);
@@ -1395,7 +1408,15 @@ impl App {
                 ui.spacing_mut().item_spacing.x = theme::SPACE_2;
                 let folder = self.current_folder();
                 let scope = self.search_scope();
-                let right_w = if folder.is_some() { 440.0 } else { 320.0 };
+                // Room for the buttons after the search box: This folder, Search contents,
+                // then sync, New folder and Upload on the right.
+                let mut right_w = 280.0;
+                if folder.is_some() {
+                    right_w += 124.0;
+                }
+                if self.is_searching() {
+                    right_w += 144.0;
+                }
                 let w = (ui.available_width() - right_w).max(200.0);
                 let hint = match &scope {
                     Some(id) => format!("Search in “{}” and its subfolders", self.folder_name(id)),

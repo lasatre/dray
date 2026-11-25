@@ -3,6 +3,7 @@
 # so the result runs on most current distributions.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT="$PWD"
 
 VERSION="${VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}"
 ARCH="$(uname -m)"
@@ -32,6 +33,7 @@ if [ ! -x "$TOOL" ]; then
 fi
 mkdir -p dist
 # Extract-and-run: CI containers have no FUSE.
-APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" --no-appstream "$APPDIR" \
-  "dist/GDriveOperator-$VERSION-$ARCH.AppImage"
+# Absolute paths: in extract-and-run mode appimagetool mis-resolves relative ones.
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$ROOT/$TOOL" --no-appstream "$ROOT/$APPDIR" \
+  "$ROOT/dist/GDriveOperator-$VERSION-$ARCH.AppImage"
 ls -la dist

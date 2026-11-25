@@ -818,6 +818,13 @@ impl App {
         let mut actions = Vec::new();
         let ctrl = Modifiers::COMMAND;
         let cs = Modifiers::COMMAND | Modifiers::SHIFT;
+        // Ctrl+C copies the selected file link(s) unless text is actually selected in the box.
+        // NB: must be read *before* `input_mut`: egui's context lock is not re-entrant, and
+        // touching ctx inside the closure deadlocks the UI thread.
+        let has_text_selection = search_focused
+            && egui::text_edit::TextEditState::load(ctx, search_id())
+                .and_then(|s| s.cursor.char_range())
+                .is_some_and(|r| !r.is_empty());
         ctx.input_mut(|i| {
             if i.consume_key(ctrl, Key::F) || i.consume_key(ctrl, Key::K) || i.consume_key(ctrl, Key::L) {
                 self.focus_search = true;
@@ -945,11 +952,6 @@ impl App {
             let mut copy = false;
             let mut cut = false;
             let mut paste = false;
-            // Ctrl+C copies the selected file link(s) unless text is actually selected in the box.
-            let has_text_selection = search_focused
-                && egui::text_edit::TextEditState::load(ctx, search_id())
-                    .and_then(|s| s.cursor.char_range())
-                    .is_some_and(|r| !r.is_empty());
             i.events.retain(|e| match e {
                 egui::Event::Copy if !has_text_selection => {
                     copy = true;

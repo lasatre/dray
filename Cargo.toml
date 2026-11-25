@@ -39,3 +39,6 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Wind
 # target a specific folder (see vendor/winit/PATCHED.md).
 [patch.crates-io]
 winit = { path = "vendor/winit" }
+
+[build-dependencies]
+embed-resource = "3.0.12"

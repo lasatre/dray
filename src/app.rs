@@ -25,6 +25,30 @@ enum View {
     Trash,
 }
 
+impl View {
+    fn to_setting(&self) -> String {
+        match self {
+            View::MyDrive => "mydrive".into(),
+            View::Recent => "recent".into(),
+            View::Starred => "starred".into(),
+            View::Shared => "shared".into(),
+            View::Trash => "trash".into(),
+            View::Folder(id) => format!("folder:{id}"),
+        }
+    }
+
+    fn from_setting(s: &str) -> Option<View> {
+        Some(match s {
+            "mydrive" => View::MyDrive,
+            "recent" => View::Recent,
+            "starred" => View::Starred,
+            "shared" => View::Shared,
+            "trash" => View::Trash,
+            _ => View::Folder(s.strip_prefix("folder:")?.to_string()),
+        })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum SortKey {
     Name,
@@ -66,6 +90,7 @@ enum Action {
     Upload,
     ContentSearch,
     Sort(SortKey),
+    SetStartFolder(String),
 }
 
 #[derive(Clone)]
@@ -188,6 +213,7 @@ impl App {
         let creds = ClientCreds::load(&paths).unwrap_or_default();
         let demo = std::env::var_os("GDO_DEMO").is_some();
         let screen = if demo { Screen::Main } else { screen };
+        let start_view = settings.start_view.as_deref().and_then(View::from_setting).unwrap_or(View::MyDrive);
         let mut app = App {
             paths,
             settings,
@@ -207,7 +233,7 @@ impl App {
             building: None,
             reset_cursor: true,
             cache_loaded: false,
-            view: View::MyDrive,
+            view: start_view,
             back: Vec::new(),
             forward: Vec::new(),
             query: String::new(),
@@ -313,6 +339,13 @@ impl App {
                     }
                     self.cache_loaded = true;
                     self.index_dirty = true;
+                    // Startup folder deleted (or no longer visible)? Fall back to My Drive.
+                    if let View::Folder(id) = &self.view {
+                        if !self.files.is_empty() && !self.files.contains_key(id) && !self.drive_names.contains_key(id) {
+                            self.view = View::MyDrive;
+                            self.toast("Startup folder not found — showing My Drive", true);
+                        }
+                    }
                 }
                 Event::Upsert(list) => {
                     let files = Arc::make_mut(&mut self.files);
@@ -758,6 +791,17 @@ impl App {
             .unwrap_or_else(|| "this folder".into())
     }
 
+    fn view_label(&self, v: &View) -> String {
+        match v {
+            View::MyDrive => "My Drive".into(),
+            View::Recent => "Recent".into(),
+            View::Starred => "Starred".into(),
+            View::Shared => "Shared with me".into(),
+            View::Trash => "Trash".into(),
+            View::Folder(id) => self.folder_name(id),
+        }
+    }
+
     /// The folder search is limited to, if the scope toggle is on and a folder is open.
     fn search_scope(&self) -> Option<String> {
         if self.scope_folder { self.current_folder() } else { None }
@@ -904,6 +948,12 @@ impl App {
                     self.content_pending = Some(q.clone());
                     self.backend.content_search(q);
                 }
+            }
+            Action::SetStartFolder(id) => {
+                let v = self.folder_view(&id);
+                self.settings.start_view = Some(v.to_setting());
+                self.settings.save(&self.paths);
+                self.toast(format!("“{}” will open at startup", self.folder_name(&id)), false);
             }
             Action::Sort(key) => {
                 self.sort = match self.sort {
@@ -1515,12 +1565,15 @@ impl App {
         let mut targets: Vec<DropTarget> = Vec::new();
         let ctrl_held = ui.input(|i| i.modifiers.command);
         let shift_held = ui.input(|i| i.modifiers.shift);
+        // Name is the non-resizable `remainder` column: egui_extras only re-fits such columns
+        // to the available width, so the listing always fills the window. The other columns
+        // stay resizable.
         let mut table = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
             .sense(Sense::click())
             .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::remainder().at_least(220.0).clip(true));
+            .column(Column::remainder().at_least(220.0).clip(true).resizable(false));
         if show_location {
             table = table.column(Column::initial(280.0).at_least(80.0).clip(true));
         }
@@ -1660,6 +1713,9 @@ impl App {
                         item(ui, "✏ Rename", "F2", Action::Rename);
                         item(ui, if f.starred { "☆ Unstar" } else { "★ Star" }, "", Action::Star(!f.starred));
                         item(ui, "✂ Cut (move)", "Ctrl+X", Action::Cut);
+                        if let Some(t) = f.folder_target() {
+                            item(ui, "📌 Open this folder at startup", "", Action::SetStartFolder(t.to_string()));
+                        }
                         if in_trash {
                             item(ui, "♻ Restore", "Del", Action::Trash(false));
                         } else {
@@ -1767,6 +1823,19 @@ impl App {
                             Some(false) => ctx.set_theme(egui::Theme::Light),
                             None => ctx.set_theme(egui::ThemePreference::System),
                         }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Open at startup");
+                    let current = self.settings.start_view.as_deref().and_then(View::from_setting).unwrap_or(View::MyDrive);
+                    ui.strong(self.view_label(&current));
+                    if self.view != current && ui.button(format!("Use “{}”", self.view_label(&self.view))).clicked() {
+                        self.settings.start_view = Some(self.view.to_setting());
+                        changed = true;
+                    }
+                    if self.settings.start_view.is_some() && ui.button("Default").clicked() {
+                        self.settings.start_view = None;
+                        changed = true;
                     }
                 });
                 ui.horizontal(|ui| {

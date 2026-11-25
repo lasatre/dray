@@ -1,3 +1,5 @@
+<img src="packaging/gdriveoperator.svg" width="72" height="72" alt="">
+
 # GDrive Operator
 
 A fast native desktop front-end for Google Drive, written in Rust (egui).
@@ -29,6 +31,8 @@ copying one needs no network request.
   Enter) opens your local copy instead of the web page. A 💾 marks downloaded files and turns
   orange when Drive has a newer version; Ctrl+S then updates the copy in place. Downloads go to
   your Downloads folder by default; change it in Settings.
+- **Startup folder**: open the app in any folder (right-click → "Open this folder at startup",
+  or Settings → Open at startup). You can also start in Recent, Starred or Shared.
 - Browse My Drive, Recent, Starred, Shared with me, Trash and shared drives. You can
   rename, star, trash/restore, move (Ctrl+X → Ctrl+V), create folders and download. Google
   Docs/Sheets/Slides are exported as .docx/.xlsx/.pptx.

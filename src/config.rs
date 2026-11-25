@@ -82,11 +82,13 @@ pub struct Settings {
     pub dark_mode: Option<bool>,
     /// Where downloads go (default: the OS Downloads folder).
     pub download_dir: Option<std::path::PathBuf>,
+    /// What to show at startup: "mydrive", "recent", "starred", "shared" or "folder:<id>".
+    pub start_view: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { copy_link_after_upload: true, poll_seconds: 15, dark_mode: None, download_dir: None }
+        Settings { copy_link_after_upload: true, poll_seconds: 15, dark_mode: None, download_dir: None, start_view: None }
     }
 }
 

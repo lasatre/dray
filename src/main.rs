@@ -18,7 +18,11 @@ fn main() -> eframe::Result {
             .with_app_id("gdriveoperator")
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([640.0, 400.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icon-256.png"))
+                    .expect("bundled icon is a valid PNG"),
+            ),
         event_loop_builder: linux_backend_hook(),
         ..Default::default()
     };

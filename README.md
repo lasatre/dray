@@ -15,6 +15,8 @@ copying one needs no network request.
   with recent files first on ties. 200k files search in roughly 2–10 ms.
   - Filters: `type:pdf|doc|sheet|slide|folder|image|video|audio|zip|code`, `ext:psd`,
     `is:starred`, `is:shared`, `is:mine`, `is:trashed`, `"exact phrase"`
+  - **📁 This folder** (Ctrl+Shift+F) limits the search to the open folder and its
+    subfolders. It stays on as you move between folders.
   - **Shift+Enter** searches inside file contents (Drive full-text search, done server-side).
 - **Launcher-style keyboard flow**: type, use ↑/↓, then **Enter** to open or **Ctrl+C** to
   copy the link. **Ctrl+Shift+S** shares the file as "anyone with link" and copies the link.
@@ -84,6 +86,7 @@ Google requires each desktop app to have its own OAuth client. It's free and tak
 | Keys | Action |
 |---|---|
 | just type / Ctrl+F / Ctrl+K | Search |
+| Ctrl+Shift+F | Search only the open folder (toggle) |
 | ↑ ↓ PgUp PgDn (Shift to extend) | Move selection, even while typing |
 | Enter / double-click | Open the local copy if downloaded, else in the browser; enter folders |
 | Ctrl+Enter | Show the result in its folder |

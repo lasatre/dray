@@ -125,6 +125,8 @@ pub struct App {
     sort: Option<(SortKey, bool)>, // (key, descending)
     content: Option<(String, Vec<String>)>,
     content_pending: Option<String>,
+    /// Limit search to the folder being viewed (and its subfolders).
+    scope_folder: bool,
 
     // selection
     selected: HashSet<String>,
@@ -217,6 +219,7 @@ impl App {
             sort: None,
             content: None,
             content_pending: None,
+            scope_folder: false,
             selected: HashSet::new(),
             cursor: None,
             anchor: None,
@@ -281,6 +284,10 @@ impl App {
         self.my_drive = Some("root".into());
         if let Ok(q) = std::env::var("GDO_DEMO_QUERY") {
             self.query = q;
+        }
+        if let Ok(folder) = std::env::var("GDO_DEMO_FOLDER") {
+            self.view = View::Folder(folder);
+            self.scope_folder = true;
         }
         self.cache_loaded = true;
         self.index_dirty = true;
@@ -484,7 +491,8 @@ impl App {
             relevance = true;
         } else if self.is_searching() {
             let q = Query::parse(&self.query);
-            let (r, total) = idx.search(&q, SEARCH_LIMIT);
+            let scope = if self.scope_folder { self.current_folder() } else { None };
+            let (r, total) = idx.search(&q, SEARCH_LIMIT, scope.as_deref());
             rows = r;
             self.total_matches = total;
             relevance = true;
@@ -739,6 +747,31 @@ impl App {
         }
     }
 
+    fn folder_name(&self, id: &str) -> String {
+        if Some(id) == self.my_drive.as_deref() {
+            return "My Drive".into();
+        }
+        self.drive_names
+            .get(id)
+            .cloned()
+            .or_else(|| self.files.get(id).map(|f| f.name.clone()))
+            .unwrap_or_else(|| "this folder".into())
+    }
+
+    /// The folder search is limited to, if the scope toggle is on and a folder is open.
+    fn search_scope(&self) -> Option<String> {
+        if self.scope_folder { self.current_folder() } else { None }
+    }
+
+    fn toggle_scope(&mut self) {
+        if self.current_folder().is_some() {
+            self.scope_folder = !self.scope_folder;
+            self.rows_dirty = true;
+            self.reset_cursor = true;
+            self.focus_search = true;
+        }
+    }
+
     fn download_dir(&self) -> PathBuf {
         self.settings.download_dir.clone().unwrap_or_else(Backend::default_download_dir)
     }
@@ -897,6 +930,7 @@ impl App {
         let mut actions = Vec::new();
         let ctrl = Modifiers::COMMAND;
         let cs = Modifiers::COMMAND | Modifiers::SHIFT;
+        let mut scope_toggle = false;
         // Ctrl+C copies the selected file link(s) unless text is actually selected in the box.
         // NB: must be read *before* `input_mut`: egui's context lock is not re-entrant, and
         // touching ctx inside the closure deadlocks the UI thread.
@@ -905,6 +939,9 @@ impl App {
                 .and_then(|s| s.cursor.char_range())
                 .is_some_and(|r| !r.is_empty());
         ctx.input_mut(|i| {
+            if i.consume_key(cs, Key::F) {
+                scope_toggle = true;
+            }
             if i.consume_key(ctrl, Key::F) || i.consume_key(ctrl, Key::K) || i.consume_key(ctrl, Key::L) {
                 self.focus_search = true;
             }
@@ -1056,6 +1093,9 @@ impl App {
                 actions.push(Action::Paste);
             }
         });
+        if scope_toggle {
+            self.toggle_scope();
+        }
         for a in actions {
             self.apply(ctx, a);
         }
@@ -1226,15 +1266,33 @@ impl App {
                 if ui.add_enabled(matches!(self.view, View::Folder(_)), egui::Button::new("⬆")).on_hover_text("Parent folder (Alt+↑)").clicked() {
                     self.go_up();
                 }
-                let right_w = 300.0;
+                let folder = self.current_folder();
+                let scope = self.search_scope();
+                let right_w = if folder.is_some() { 430.0 } else { 300.0 };
                 let w = (ui.available_width() - right_w).max(200.0);
+                let hint = match &scope {
+                    Some(id) => format!("🔍  Search in “{}” and its subfolders", self.folder_name(id)),
+                    None => "🔍  Search all files   (type:pdf  ext:psd  is:starred  \"exact phrase\")".into(),
+                };
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.query)
                         .id(search_id())
-                        .hint_text("🔍  Search all files   (type:pdf  ext:psd  is:starred  \"exact phrase\")")
+                        .hint_text(hint)
                         .desired_width(w)
                         .margin(egui::vec2(8.0, 6.0)),
                 );
+                if let Some(id) = &folder {
+                    let on = scope.is_some();
+                    let label = if on { "📁 This folder ✔" } else { "📁 This folder" };
+                    let tip = if on {
+                        format!("Searching only “{}” and its subfolders — click to search everything (Ctrl+Shift+F)", self.folder_name(id))
+                    } else {
+                        format!("Only search “{}” and its subfolders (Ctrl+Shift+F)", self.folder_name(id))
+                    };
+                    if ui.add(egui::Button::selectable(on, label)).on_hover_text(tip).clicked() {
+                        self.toggle_scope();
+                    }
+                }
                 if self.focus_search {
                     resp.request_focus();
                     self.focus_search = false;
@@ -1273,6 +1331,12 @@ impl App {
                     ui.weak("(from Drive)");
                 } else if self.is_searching() {
                     ui.strong(format!("{} result{}", self.total_matches, if self.total_matches == 1 { "" } else { "s" }));
+                    if let Some(id) = self.search_scope() {
+                        ui.label(format!("in “{}”", self.folder_name(&id)));
+                        if ui.small_button("✖ search everywhere").clicked() {
+                            self.toggle_scope();
+                        }
+                    }
                     if self.total_matches > self.rows.len() {
                         ui.weak(format!("(showing top {})", self.rows.len()));
                     }
@@ -1744,6 +1808,7 @@ impl App {
                     egui::Grid::new("keys").num_columns(2).striped(true).show(ui, |ui| {
                         for (k, d) in [
                             ("Ctrl+F / Ctrl+K", "Focus search (or just start typing)"),
+                            ("Ctrl+Shift+F", "Search only the open folder (toggle)"),
                             ("↑ ↓  PgUp PgDn", "Move selection (works while typing)"),
                             ("Enter / double-click", "Open (local copy if downloaded) / enter folder"),
                             ("Ctrl+Enter", "Show in folder"),

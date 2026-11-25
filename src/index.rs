@@ -21,6 +21,8 @@ pub struct Index {
     pub children: HashMap<String, Vec<usize>>,
     /// Normalised folder paths, shared by all entries in the same folder.
     pub path_norms: Vec<Arc<str>>,
+    /// Folder id → its path id (only folders that contain something).
+    pub folder_path_ids: HashMap<String, u32>,
 }
 
 type PathMemo = HashMap<String, (Arc<str>, u32)>;
@@ -70,7 +72,9 @@ impl Index {
                 children.entry(p.clone()).or_default().push(i);
             }
         }
-        Index { entries, by_id, children, path_norms }
+        let folder_path_ids =
+            memo.into_iter().filter(|(k, _)| !k.starts_with('\0')).map(|(k, (_, id))| (k, id)).collect();
+        Index { entries, by_id, children, path_norms, folder_path_ids }
     }
 
     #[allow(dead_code)]
@@ -78,7 +82,29 @@ impl Index {
         self.by_id.get(id).map(|&i| &self.entries[i])
     }
 
-    pub fn search(&self, q: &Query, limit: usize) -> (Vec<usize>, usize) {
+    /// Path ids of `root` and every folder below it, as a mask over [`Self::path_norms`].
+    fn scope_mask(&self, root: &str) -> Vec<bool> {
+        let mut mask = vec![false; self.path_norms.len()];
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![root];
+        seen.insert(root);
+        while let Some(id) = stack.pop() {
+            if let Some(&pid) = self.folder_path_ids.get(id) {
+                mask[pid as usize] = true;
+            }
+            for &c in self.children.get(id).into_iter().flatten() {
+                let f = &self.entries[c].file;
+                if f.is_folder() && seen.insert(f.id.as_str()) {
+                    stack.push(f.id.as_str());
+                }
+            }
+        }
+        mask
+    }
+
+    /// Ranked search. `scope` limits results to a folder and everything below it.
+    pub fn search(&self, q: &Query, limit: usize, scope: Option<&str>) -> (Vec<usize>, usize) {
+        let mask = scope.map(|root| self.scope_mask(root));
         // Which tokens occur in each folder path: computed once per folder, not per file.
         let tokens = &q.tokens[..q.tokens.len().min(64)];
         let path_hits: Vec<u64> = self
@@ -92,7 +118,7 @@ impl Index {
             let mut out = Vec::new();
             for i in range {
                 let e = &self.entries[i];
-                if !q.accepts(e) {
+                if mask.as_ref().is_some_and(|m| !m[e.path_id as usize]) || !q.accepts(e) {
                     continue;
                 }
                 if let Some(s) = score(e, tokens, &q.whole, path_hits[e.path_id as usize]) {
@@ -335,16 +361,23 @@ mod tests {
         let idx = Index::build(&files, &Roots { my_drive: Some("root"), drives: &drives });
         assert_eq!(&*idx.get("b").unwrap().path, "My Drive/Projects");
 
-        let (r, n) = idx.search(&Query::parse("report"), 10);
+        let (r, n) = idx.search(&Query::parse("report"), 10, None);
         assert_eq!(n, 2);
         assert_eq!(idx.entries[r[0]].file.id, "c"); // prefix + exact beats mid-word
-        let (r, _) = idx.search(&Query::parse("report 2024"), 10);
+        let (r, _) = idx.search(&Query::parse("report 2024"), 10, None);
         assert_eq!(r.len(), 1);
-        let (r, _) = idx.search(&Query::parse("projects unrelated"), 10); // path token
+        let (r, _) = idx.search(&Query::parse("projects unrelated"), 10, None); // path token
         assert_eq!(idx.entries[r[0]].file.id, "d");
-        let (r, _) = idx.search(&Query::parse("type:folder"), 10);
+        let (r, _) = idx.search(&Query::parse("type:folder"), 10, None);
         assert_eq!(r.len(), 1);
-        let (r, _) = idx.search(&Query::parse("\"tax report\""), 10);
+        // Folder scope: "report" inside Projects only finds the file there, not root's report.pdf.
+        let (r, n) = idx.search(&Query::parse("report"), 10, Some("a"));
+        assert_eq!((n, idx.entries[r[0]].file.id.as_str()), (1, "b"));
+        let (_, n) = idx.search(&Query::parse("pdf"), 10, Some("a"));
+        assert_eq!(n, 2);
+        let (_, n) = idx.search(&Query::parse("report"), 10, Some("root"));
+        assert_eq!(n, 2);
+        let (r, _) = idx.search(&Query::parse("\"tax report\""), 10, None);
         assert_eq!(r.len(), 1);
 
         let mut files2 = HashMap::new();
@@ -352,7 +385,7 @@ mod tests {
             files2.insert(f.id.clone(), f);
         }
         let idx = Index::build(&files2, &Roots { my_drive: Some("root"), drives: &drives });
-        let (r, _) = idx.search(&Query::parse("photo_photo-22"), 10);
+        let (r, _) = idx.search(&Query::parse("photo_photo-22"), 10, None);
         assert_eq!(idx.entries[r[0]].file.id, "y"); // whole-word prefix beats partial
     }
 
@@ -378,8 +411,11 @@ mod tests {
         println!("build: {:?} for {} entries", t.elapsed(), idx.entries.len());
         for q in ["r", "rep", "report budget", "invoice 1999", "zzz", "type:folder plan"] {
             let t = std::time::Instant::now();
-            let (r, n) = idx.search(&Query::parse(q), 5000);
+            let (r, n) = idx.search(&Query::parse(q), 5000, None);
             println!("search {q:?}: {:?} ({n} matches, {} shown)", t.elapsed(), r.len());
         }
+        let t = std::time::Instant::now();
+        let (_, n) = idx.search(&Query::parse("report"), 5000, Some("f7"));
+        println!("scoped search: {:?} ({n} matches)", t.elapsed());
     }
 }

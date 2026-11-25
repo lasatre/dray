@@ -2,6 +2,7 @@ use crate::backend::{Backend, Event, SyncState};
 use crate::config::{ClientCreds, Paths, Settings};
 use crate::index::{Index, Query, Roots};
 use crate::model::{DFile, Kind, SharedDrive};
+use crate::pointer::PointerProbe;
 use eframe::egui::{self, Align, Color32, Id, Key, Layout, Modifiers, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +39,7 @@ enum Screen {
 
 enum UiMsg {
     CredsFile(PathBuf),
+    DownloadDir(PathBuf),
     Upload(Vec<PathBuf>, String),
 }
 
@@ -50,6 +52,8 @@ enum Action {
     CopyId,
     CopyName,
     Reveal(String),
+    ShowLocal(String),
+    ForgetLocal(String),
     Rename,
     Star(bool),
     Trash(bool),
@@ -63,6 +67,22 @@ enum Action {
     ContentSearch,
     Sort(SortKey),
 }
+
+#[derive(Clone)]
+struct LocalCopy {
+    path: PathBuf,
+    /// Drive `modifiedTime` of the version that was downloaded.
+    modified: String,
+}
+
+impl LocalCopy {
+    fn outdated(&self, f: &DFile) -> bool {
+        !self.modified.is_empty() && f.modified_time.as_deref().is_some_and(|m| m > self.modified.as_str())
+    }
+}
+
+/// A place files can be dropped onto: screen rect, folder id, display name.
+type DropTarget = (egui::Rect, String, String);
 
 struct Toast {
     text: String,
@@ -113,6 +133,12 @@ pub struct App {
     scroll_to_cursor: bool,
     focus_search: bool,
     cut: Vec<(String, Vec<String>)>,
+    local: HashMap<String, LocalCopy>,
+
+    // drag & drop
+    probe: Option<PointerProbe>,
+    drop_targets: Vec<DropTarget>,
+    drop_hover: Option<(String, String)>,
 
     // dialogs
     rename: Option<(String, String)>,
@@ -197,6 +223,10 @@ impl App {
             scroll_to_cursor: false,
             focus_search: true,
             cut: Vec::new(),
+            local: HashMap::new(),
+            probe: None,
+            drop_targets: Vec::new(),
+            drop_hover: None,
             rename: None,
             new_folder: None,
             settings_open: false,
@@ -352,13 +382,25 @@ impl App {
                     ctx.copy_text(text);
                     self.toast(toast, false);
                 }
-                Event::Downloaded(path) => self.toast(format!("Saved {}", path.display()), false),
+                Event::LocalCopies(list) => {
+                    for (id, path, modified) in list {
+                        self.local.insert(id, LocalCopy { path, modified });
+                    }
+                }
+                Event::Downloaded { id, path, modified } => {
+                    self.toast(format!("Saved {} — double-click to open it", path.display()), false);
+                    self.local.insert(id, LocalCopy { path, modified });
+                }
             }
         }
         while let Ok(msg) = self.ui_rx.try_recv() {
             match msg {
                 UiMsg::CredsFile(path) => self.load_creds_file(path),
                 UiMsg::Upload(paths, parent) => self.backend.upload(paths, parent),
+                UiMsg::DownloadDir(dir) => {
+                    self.settings.download_dir = Some(dir);
+                    self.settings.save(&self.paths);
+                }
             }
         }
     }
@@ -640,6 +682,20 @@ impl App {
             let v = self.folder_view(target);
             self.navigate(v);
         } else {
+            // Downloaded before? Open the local copy instead of the web page.
+            if let Some(lc) = self.local.get(&f.id).cloned() {
+                if lc.path.exists() {
+                    if let Err(e) = open::that_detached(&lc.path) {
+                        self.toast(format!("Couldn't open {}: {e}", lc.path.display()), true);
+                    } else if lc.outdated(&f) {
+                        self.toast(format!("Drive has a newer version of '{}' — Ctrl+S updates your copy", f.name), false);
+                    }
+                    return;
+                }
+                // File was moved or deleted locally: forget it and fall back to the web.
+                self.local.remove(&f.id);
+                self.backend.forget_local_copy(&f.id);
+            }
             let link = match &f.shortcut_details {
                 Some(s) if !s.target_id.is_empty() => self
                     .files
@@ -681,6 +737,10 @@ impl App {
         } else {
             self.toast(format!("{} {what}s copied", t.len()), false);
         }
+    }
+
+    fn download_dir(&self) -> PathBuf {
+        self.settings.download_dir.clone().unwrap_or_else(Backend::default_download_dir)
     }
 
     fn upload_target(&self) -> Option<String> {
@@ -739,8 +799,27 @@ impl App {
                 }
             }
             Action::Download => {
-                let files = self.targets().iter().map(|f| (**f).clone()).collect();
-                self.backend.download(files);
+                let files: Vec<(DFile, Option<PathBuf>)> = self
+                    .targets()
+                    .iter()
+                    .map(|f| {
+                        let existing = self.local.get(&f.id).map(|l| l.path.clone()).filter(|p| p.exists());
+                        ((**f).clone(), existing)
+                    })
+                    .collect();
+                if !files.is_empty() {
+                    self.backend.download(files, self.download_dir());
+                }
+            }
+            Action::ShowLocal(id) => {
+                if let Some(lc) = self.local.get(&id) {
+                    reveal_in_file_manager(&lc.path);
+                }
+            }
+            Action::ForgetLocal(id) => {
+                self.local.remove(&id);
+                self.backend.forget_local_copy(&id);
+                self.toast("Local copy forgotten (the file itself was not deleted)", false);
             }
             Action::Share => {
                 if let Some(f) = self.targets().first() {
@@ -1087,15 +1166,27 @@ impl App {
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let mut targets: Vec<DropTarget> = Vec::new();
         egui::Panel::left("sidebar").resizable(true).default_size(190.0).show(ui, |ui| {
             ui.add_space(6.0);
             let cur = self.view.clone();
             let searching = self.is_searching();
-            let item = |ui: &mut egui::Ui, label: &str, v: View, actions: &mut Vec<Action>| {
-                let sel = !searching && cur == v;
+            let hover = self.drop_hover.as_ref().map(|h| h.0.clone());
+            let mut item = |ui: &mut egui::Ui, label: &str, v: View, actions: &mut Vec<Action>| {
+                let drop_id = match &v {
+                    View::MyDrive => self.my_drive.clone(),
+                    View::Folder(id) => Some(id.clone()),
+                    _ => None,
+                };
+                let sel = (!searching && cur == v) || (drop_id.is_some() && drop_id == hover);
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                    if ui.selectable_label(sel, RichText::new(label).size(15.0)).clicked() {
+                    let r = ui.selectable_label(sel, RichText::new(label).size(15.0));
+                    if r.clicked() {
                         actions.push(Action::Nav(v));
+                    }
+                    if let Some(id) = drop_id {
+                        let name = label.trim_start_matches(|c: char| !c.is_alphanumeric()).to_string();
+                        targets.push((r.rect, id, name));
                     }
                 });
             };
@@ -1119,6 +1210,7 @@ impl App {
                 ui.weak(format!("{} items cached", self.files.len()));
             });
         });
+        self.drop_targets.extend(targets);
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -1186,14 +1278,16 @@ impl App {
                     }
                     ui.weak(format!("· {:.1} ms", self.search_time.as_secs_f64() * 1000.0));
                 } else {
-                    self.breadcrumb(ui, actions);
+                    let mut targets = Vec::new();
+                    self.breadcrumb(ui, actions, &mut targets);
+                    self.drop_targets.extend(targets);
                 }
             });
             ui.add_space(4.0);
         });
     }
 
-    fn breadcrumb(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    fn breadcrumb(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>, targets: &mut Vec<DropTarget>) {
         let title = match &self.view {
             View::Recent => Some("Recent"),
             View::Starred => Some("Starred"),
@@ -1242,10 +1336,27 @@ impl App {
             if i > 0 {
                 ui.weak("›");
             }
-            if i + 1 == n {
-                ui.strong(name);
-            } else if ui.link(name).clicked() {
-                actions.push(Action::Nav(v));
+            let folder_id = match &v {
+                View::MyDrive => self.my_drive.clone(),
+                View::Folder(id) => Some(id.clone()),
+                _ => None,
+            };
+            let hovered = folder_id.is_some() && folder_id == self.drop_hover.as_ref().map(|h| h.0.clone());
+            let r = if i + 1 == n {
+                ui.strong(name.clone())
+            } else {
+                let mut text = RichText::new(name.clone());
+                if hovered {
+                    text = text.underline().strong();
+                }
+                let r = ui.link(text);
+                if r.clicked() {
+                    actions.push(Action::Nav(v));
+                }
+                r
+            };
+            if let Some(id) = folder_id {
+                targets.push((r.rect.expand(4.0), id, name));
             }
         }
     }
@@ -1336,6 +1447,8 @@ impl App {
             Some((s, desc)) if s == k => if desc { " ⏷" } else { " ⏶" },
             _ => "",
         };
+        let drop_hover = self.drop_hover.as_ref().map(|h| h.0.clone());
+        let mut targets: Vec<DropTarget> = Vec::new();
         let ctrl_held = ui.input(|i| i.modifiers.command);
         let shift_held = ui.input(|i| i.modifiers.shift);
         let mut table = TableBuilder::new(ui)
@@ -1380,7 +1493,9 @@ impl App {
                     let f = &e.file;
                     let is_sel = self.selected.contains(&f.id);
                     let is_cursor = self.cursor.as_deref() == Some(f.id.as_str());
-                    row.set_selected(is_sel || (is_cursor && self.selected.is_empty()));
+                    let folder_target = f.folder_target().map(str::to_string);
+                    let drop_here = folder_target.is_some() && folder_target == drop_hover;
+                    row.set_selected(drop_here || is_sel || (is_cursor && self.selected.is_empty()));
                     row.col(|ui| {
                         ui.label(e.kind.icon());
                         let mut name = RichText::new(&f.name);
@@ -1396,6 +1511,17 @@ impl App {
                         }
                         if f.shared {
                             ui.weak("👥");
+                        }
+                        if let Some(lc) = self.local.get(&f.id) {
+                            if lc.outdated(f) {
+                                ui.label(RichText::new("💾").color(ui.visuals().warn_fg_color)).on_hover_text(format!(
+                                    "Downloaded to {}\nDrive has a newer version (Ctrl+S to update)",
+                                    lc.path.display()
+                                ));
+                            } else {
+                                ui.label(RichText::new("💾").color(Color32::from_rgb(80, 170, 90)))
+                                    .on_hover_text(format!("Downloaded to {}\nDouble-click opens it", lc.path.display()));
+                            }
                         }
                     });
                     if show_location {
@@ -1414,6 +1540,9 @@ impl App {
                         }
                     });
                     let resp = row.response();
+                    if let Some(t) = folder_target {
+                        targets.push((resp.rect, t, f.name.clone()));
+                    }
                     if resp.clicked() {
                         actions.push(Action::Click { id: f.id.clone(), ctrl: ctrl_held, shift: shift_held });
                     }
@@ -1424,6 +1553,7 @@ impl App {
                         actions.push(Action::Click { id: f.id.clone(), ctrl: false, shift: false });
                     }
                     let is_folder = f.folder_target().is_some();
+                    let has_local = self.local.get(&f.id).is_some_and(|l| l.path.exists());
                     resp.context_menu(|ui| {
                         ui.set_min_width(220.0);
                         let mut item = |ui: &mut egui::Ui, label: &str, hint: &str, a: Action| {
@@ -1433,8 +1563,18 @@ impl App {
                                 ui.close();
                             }
                         };
-                        item(ui, if is_folder { "📂 Open" } else { "↗ Open" }, "Enter", Action::Open(f.id.clone()));
+                        let open_label = if is_folder {
+                            "📂 Open"
+                        } else if has_local {
+                            "↗ Open local copy"
+                        } else {
+                            "↗ Open"
+                        };
+                        item(ui, open_label, "Enter", Action::Open(f.id.clone()));
                         item(ui, "🌐 Open in browser", "Ctrl+O", Action::OpenInBrowser);
+                        if has_local {
+                            item(ui, "🗁 Show local file", "", Action::ShowLocal(f.id.clone()));
+                        }
                         if show_location {
                             item(ui, "📍 Show in folder", "Ctrl+Enter", Action::Reveal(f.id.clone()));
                         }
@@ -1448,7 +1588,10 @@ impl App {
                         item(ui, "Copy ID", "", Action::CopyId);
                         ui.separator();
                         if !is_folder {
-                            item(ui, "💾 Download", "Ctrl+S", Action::Download);
+                            item(ui, if has_local { "💾 Update local copy" } else { "💾 Download" }, "Ctrl+S", Action::Download);
+                        }
+                        if has_local {
+                            item(ui, "Forget local copy", "", Action::ForgetLocal(f.id.clone()));
                         }
                         item(ui, "✏ Rename", "F2", Action::Rename);
                         item(ui, if f.starred { "☆ Unstar" } else { "★ Star" }, "", Action::Star(!f.starred));
@@ -1461,6 +1604,7 @@ impl App {
                     });
                 });
             });
+        self.drop_targets.extend(targets);
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -1561,6 +1705,25 @@ impl App {
                         }
                     }
                 });
+                ui.horizontal(|ui| {
+                    ui.label("Download to");
+                    let dir = self.download_dir();
+                    ui.monospace(dir.display().to_string());
+                    if ui.button("Change…").clicked() {
+                        let tx = self.ui_tx.clone();
+                        let ctx = ctx.clone();
+                        std::thread::spawn(move || {
+                            if let Some(p) = rfd::FileDialog::new().set_directory(&dir).pick_folder() {
+                                let _ = tx.send(UiMsg::DownloadDir(p));
+                                ctx.request_repaint();
+                            }
+                        });
+                    }
+                    if self.settings.download_dir.is_some() && ui.button("Default").clicked() {
+                        self.settings.download_dir = None;
+                        changed = true;
+                    }
+                });
                 if changed {
                     self.settings.save(&self.paths);
                 }
@@ -1582,15 +1745,15 @@ impl App {
                         for (k, d) in [
                             ("Ctrl+F / Ctrl+K", "Focus search (or just start typing)"),
                             ("↑ ↓  PgUp PgDn", "Move selection (works while typing)"),
-                            ("Enter", "Open file / enter folder"),
+                            ("Enter / double-click", "Open (local copy if downloaded) / enter folder"),
                             ("Ctrl+Enter", "Show in folder"),
                             ("Shift+Enter", "Search inside file contents (Drive)"),
                             ("Ctrl+C / Ctrl+Shift+C", "Copy link(s)"),
                             ("Ctrl+Shift+D", "Copy direct download link"),
                             ("Ctrl+Shift+S", "Share with anyone with link + copy"),
                             ("Ctrl+O", "Open in browser"),
-                            ("Ctrl+S", "Download"),
-                            ("Ctrl+U / drop files", "Upload into current folder"),
+                            ("Ctrl+S", "Download (or update the local copy)"),
+                            ("Ctrl+U / drag & drop", "Upload (drop onto a folder to upload into it)"),
                             ("Ctrl+Shift+N", "New folder"),
                             ("F2", "Rename"),
                             ("Delete", "Move to trash / restore"),
@@ -1639,30 +1802,82 @@ impl App {
             });
     }
 
-    fn handle_drops(&mut self, ctx: &egui::Context) {
+    /// Drag & drop upload. Dropping onto a folder row, sidebar entry or breadcrumb uploads
+    /// into that folder; anywhere else uploads into the folder being viewed.
+    fn handle_drops(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let (hovering, dropped) = ctx.input(|i| {
             (
                 !i.raw.hovered_files.is_empty(),
                 i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect::<Vec<_>>(),
             )
         });
+        if !hovering && dropped.is_empty() {
+            self.drop_hover = None;
+            return;
+        }
+        // The drag source owns the pointer, so ask the window system where it is.
+        let probe = self.probe.get_or_insert_with(|| PointerProbe::new(frame));
+        let ppp = ctx.pixels_per_point();
+        let pos = probe
+            .position()
+            .map(|(x, y)| egui::pos2(x / ppp, y / ppp))
+            .or_else(|| ctx.input(|i| i.pointer.latest_pos()));
+        let hit = pos.and_then(|p| {
+            // Later targets (rows) are drawn on top of earlier ones; prefer the smallest hit.
+            self.drop_targets
+                .iter()
+                .filter(|(r, _, _)| r.contains(p))
+                .min_by(|a, b| a.0.area().total_cmp(&b.0.area()))
+                .map(|(r, id, name)| (*r, id.clone(), name.clone()))
+        });
+        self.drop_hover = hit.as_ref().map(|(_, id, name)| (id.clone(), name.clone()));
+        let fallback = || {
+            let id = self.upload_target()?;
+            let name = if Some(&id) == self.my_drive.as_ref() {
+                "My Drive".to_string()
+            } else {
+                self.drive_names
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| self.files.get(&id).map(|f| f.name.clone()))
+                    .unwrap_or_else(|| "this folder".into())
+            };
+            Some((id, name))
+        };
+        let target = self.drop_hover.clone().or_else(fallback);
+
         if hovering {
-            let target = self.upload_target().and_then(|t| self.files.get(&t).map(|f| f.name.clone())).unwrap_or("My Drive".into());
+            ctx.request_repaint_after(Duration::from_millis(30)); // no pointer events while dragging
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("drop")));
-            let rect = ctx.content_rect();
-            painter.rect_filled(rect, 0.0, Color32::from_black_alpha(150));
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                format!("Drop to upload into “{target}”"),
-                egui::FontId::proportional(24.0),
-                Color32::WHITE,
+            let screen = ctx.content_rect();
+            let accent = ctx.global_style().visuals.selection.bg_fill;
+            match &hit {
+                Some((rect, _, _)) => {
+                    painter.rect_filled(*rect, 4.0, accent.gamma_multiply(0.35));
+                    painter.rect_stroke(*rect, 4.0, egui::Stroke::new(2.0, accent), egui::StrokeKind::Inside);
+                }
+                None => {
+                    painter.rect_filled(screen, 0.0, accent.gamma_multiply(0.08));
+                    painter.rect_stroke(screen.shrink(3.0), 6.0, egui::Stroke::new(3.0, accent), egui::StrokeKind::Inside);
+                }
+            }
+            let text = match &target {
+                Some((_, name)) => format!("⬆  Drop to upload into “{name}”"),
+                None => "Still syncing — can't upload yet".into(),
+            };
+            let galley = painter.layout_no_wrap(text, egui::FontId::proportional(17.0), Color32::WHITE);
+            let pill = egui::Rect::from_center_size(
+                egui::pos2(screen.center().x, screen.bottom() - 60.0),
+                galley.size() + egui::vec2(32.0, 18.0),
             );
+            painter.rect_filled(pill, 18.0, accent);
+            painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
         }
         if !dropped.is_empty() {
-            match self.upload_target() {
-                Some(parent) => {
-                    self.toast(format!("Uploading {} item(s)…", dropped.len()), false);
+            self.drop_hover = None;
+            match target {
+                Some((parent, name)) => {
+                    self.toast(format!("Uploading {} item(s) into “{name}”…", dropped.len()), false);
                     self.backend.upload(dropped, parent);
                 }
                 None => self.toast("Still syncing — try again in a moment", true),
@@ -1684,7 +1899,7 @@ impl eframe::App for App {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if matches!(self.screen, Screen::Setup) {
             self.setup_ui(ui);
@@ -1692,9 +1907,10 @@ impl eframe::App for App {
         }
         self.handle_keys(&ctx);
         self.recompute_rows();
-        self.handle_drops(&ctx);
+        self.handle_drops(&ctx, frame);
 
         let mut actions = Vec::new();
+        self.drop_targets.clear();
         self.status_bar(ui);
         self.sidebar(ui, &mut actions);
         self.top_bar(ui, &mut actions);
@@ -1758,5 +1974,41 @@ fn ago(d: Duration) -> String {
         format!("{s}s ago")
     } else {
         format!("{}m ago", s / 60)
+    }
+}
+
+/// Show a file in the system file manager, selected if the platform supports it.
+fn reveal_in_file_manager(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+        return;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // freedesktop FileManager1 (Dolphin, Nautilus, Nemo, …) highlights the file.
+        let uri = reqwest::Url::from_file_path(path).map(|u| u.to_string()).unwrap_or_default();
+        let ok = std::process::Command::new("dbus-send")
+            .args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+            ])
+            .arg(format!("array:string:{uri}"))
+            .arg("string:")
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            if let Some(dir) = path.parent() {
+                let _ = open::that_detached(dir);
+            }
+        }
     }
 }

@@ -42,7 +42,8 @@ pub enum Event {
     Uploaded { file: DFile, single: bool },
     ContentResults { query: String, ids: Vec<String> },
     CopyText { text: String, toast: String },
-    Downloaded(PathBuf),
+    LocalCopies(Vec<(String, PathBuf, String)>),
+    Downloaded { id: String, path: PathBuf, modified: String },
 }
 
 enum SyncCmd {
@@ -186,7 +187,11 @@ impl Backend {
                 .map(|(id, name)| SharedDrive { id, name })
                 .collect();
             let files = cache.load_all().unwrap_or_default();
+            let local = cache.local_copies().unwrap_or_default();
             drop(cache);
+            self.send(Event::LocalCopies(
+                local.into_iter().map(|(id, p, m)| (id, PathBuf::from(p), m)).collect(),
+            ));
             self.send(Event::Roots { my_drive, drives });
             self.send(Event::CacheLoaded(files));
         }
@@ -423,13 +428,18 @@ impl Backend {
         });
     }
 
-    pub fn download(&self, files: Vec<DFile>) {
-        let dir = directories::UserDirs::new()
+    pub fn default_download_dir() -> PathBuf {
+        directories::UserDirs::new()
             .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
             .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."));
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Download files into `dir`. Files with an existing local copy (`Some(path)`) are refreshed
+    /// in place. Every successful download is remembered so the app can open it locally.
+    pub fn download(&self, files: Vec<(DFile, Option<PathBuf>)>, dir: PathBuf) {
         self.op("Download failed", move |b, d| {
-            for f in files {
+            for (f, existing) in files {
                 if f.is_folder() {
                     b.send(Event::Toast { text: format!("Skipping folder '{}'", f.name), error: true });
                     continue;
@@ -437,7 +447,7 @@ impl Backend {
                 let id = b.inner.next_id.fetch_add(1, Ordering::Relaxed);
                 let label = format!("⬇ {}", f.name);
                 let mut last = Instant::now() - Duration::from_secs(1);
-                let r = d.download(&f, &dir, |done, total| {
+                let r = d.download(&f, &dir, existing.as_deref(), |done, total| {
                     if last.elapsed() > Duration::from_millis(100) {
                         last = Instant::now();
                         let frac = total.map(|t| done as f32 / t.max(1) as f32);
@@ -446,10 +456,16 @@ impl Backend {
                 });
                 b.send(Event::ProgressDone(id));
                 let path = r?;
-                b.send(Event::Downloaded(path));
+                let modified = f.modified_time.clone().unwrap_or_default();
+                let _ = b.inner.cache.lock().unwrap().set_local_copy(&f.id, &path.to_string_lossy(), &modified);
+                b.send(Event::Downloaded { id: f.id.clone(), path, modified });
             }
             Ok(())
         });
+    }
+
+    pub fn forget_local_copy(&self, id: &str) {
+        let _ = self.inner.cache.lock().unwrap().forget_local_copy(id);
     }
 
     /// Upload files and/or directories (recursively) into `parent`.

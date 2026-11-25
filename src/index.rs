@@ -197,8 +197,9 @@ fn score(e: &Entry, tokens: &[String], whole: &str, path_hits: u64) -> Option<i3
     let trimmed = name.trim();
     if trimmed == whole {
         s += 400;
-    } else if trimmed.starts_with(whole) {
-        s += 120;
+    } else if let Some(rest) = trimmed.strip_prefix(whole) {
+        // "report 22" should rank "Report_22.pdf" above "Report_221.pdf".
+        s += if rest.starts_with(' ') { 300 } else { 120 };
     } else if name.contains(whole) {
         s += 50;
     }
@@ -345,6 +346,14 @@ mod tests {
         assert_eq!(r.len(), 1);
         let (r, _) = idx.search(&Query::parse("\"tax report\""), 10);
         assert_eq!(r.len(), 1);
+
+        let mut files2 = HashMap::new();
+        for f in [file("x", "Photo_Photo-222.jpg", "root"), file("y", "Photo_Photo-22.txt", "root")] {
+            files2.insert(f.id.clone(), f);
+        }
+        let idx = Index::build(&files2, &Roots { my_drive: Some("root"), drives: &drives });
+        let (r, _) = idx.search(&Query::parse("photo_photo-22"), 10);
+        assert_eq!(idx.entries[r[0]].file.id, "y"); // whole-word prefix beats partial
     }
 
     /// `cargo test --release -- --ignored --nocapture bench` for a rough timing.

@@ -401,8 +401,15 @@ impl Drive {
         }
     }
 
-    /// Download (or export, for Google Docs/Sheets/Slides) into `dir`. Returns the written path.
-    pub fn download(&self, f: &DFile, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<PathBuf> {
+    /// Download (or export, for Google Docs/Sheets/Slides) into `dir`, or over `overwrite` if
+    /// given (refreshing an earlier download). Returns the written path.
+    pub fn download(
+        &self,
+        f: &DFile,
+        dir: &Path,
+        overwrite: Option<&Path>,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<PathBuf> {
         let (url, query, ext): (String, Vec<(&str, &str)>, Option<&str>) = if f.is_google_native() {
             let (mime, ext) = match f.mime_type.as_str() {
                 "application/vnd.google-apps.document" => (
@@ -435,10 +442,18 @@ impl Drive {
                 name = format!("{name}.{ext}");
             }
         }
-        let dest = unique_path(dir, &name);
+        let dest = match overwrite {
+            Some(p) => p.to_path_buf(),
+            None => {
+                std::fs::create_dir_all(dir)?;
+                unique_path(dir, &name)
+            }
+        };
         let mut resp = self.exec(|c| c.get(&url).query(&query).timeout(Duration::from_secs(3600)))?;
         let total = resp.content_length().or(f.size_bytes());
-        let part = dest.with_extension("part-gdo");
+        let mut part = dest.clone().into_os_string();
+        part.push(".part-gdo");
+        let part = PathBuf::from(part);
         let mut out = std::fs::File::create(&part).with_context(|| format!("creating {}", part.display()))?;
         let mut buf = vec![0u8; 256 * 1024];
         let mut done = 0u64;

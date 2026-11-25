@@ -18,9 +18,15 @@ copying one needs no network request.
   - **Shift+Enter** searches inside file contents (Drive full-text search, done server-side).
 - **Launcher-style keyboard flow**: type, use ↑/↓, then **Enter** to open or **Ctrl+C** to
   copy the link. **Ctrl+Shift+S** shares the file as "anyone with link" and copies the link.
-- **Uploads**: drop files or whole folders on the window, or press Ctrl+U. Up to 4 uploads
-  run in parallel. Large files use resumable uploads. When the upload finishes, the file is
+- **Drag & drop uploads, like the web UI**: drop files or whole folders onto a folder row, a
+  sidebar entry or a breadcrumb to upload into that folder. Dropping anywhere else uploads into
+  the folder you're viewing. Ctrl+U opens a file picker instead. Up to 4 uploads run in
+  parallel. Large files use resumable uploads. When the upload finishes, the file is
   selected right away and (optionally) its link is copied.
+- **Downloads are remembered**: after you download a file, double-clicking it (or pressing
+  Enter) opens your local copy instead of the web page. A 💾 marks downloaded files and turns
+  orange when Drive has a newer version; Ctrl+S then updates the copy in place. Downloads go to
+  your Downloads folder by default; change it in Settings.
 - Browse My Drive, Recent, Starred, Shared with me, Trash and shared drives. You can
   rename, star, trash/restore, move (Ctrl+X → Ctrl+V), create folders and download. Google
   Docs/Sheets/Slides are exported as .docx/.xlsx/.pptx.
@@ -79,15 +85,15 @@ Google requires each desktop app to have its own OAuth client. It's free and tak
 |---|---|
 | just type / Ctrl+F / Ctrl+K | Search |
 | ↑ ↓ PgUp PgDn (Shift to extend) | Move selection, even while typing |
-| Enter | Open file in browser / enter folder |
+| Enter / double-click | Open the local copy if downloaded, else in the browser; enter folders |
 | Ctrl+Enter | Show the result in its folder |
 | Shift+Enter | Search file contents on Drive |
 | Ctrl+C / Ctrl+Shift+C | Copy link(s) |
 | Ctrl+Shift+D | Copy direct-download link |
 | Ctrl+Shift+S | Share "anyone with link" and copy the link |
 | Ctrl+O | Open in browser |
-| Ctrl+S | Download to ~/Downloads |
-| Ctrl+U / drag & drop | Upload into the current folder |
+| Ctrl+S | Download (or update the local copy) |
+| Ctrl+U / drag & drop | Upload (drop onto a folder to upload into it) |
 | Ctrl+Shift+N | New folder |
 | F2 | Rename |
 | Delete | Trash (Restore in Trash view) |
@@ -97,10 +103,21 @@ Google requires each desktop app to have its own OAuth client. It's free and tak
 | Esc | Clear search |
 | F5 / Ctrl+R | Sync now |
 
+## Linux: X11 vs Wayland
+
+winit, the windowing library, doesn't support file drag-and-drop on native Wayland yet. So on
+Linux the app runs through XWayland whenever `DISPLAY` is set (KDE and GNOME scale XWayland
+apps crisply by default). `GDO_WAYLAND=1` forces native Wayland, but drag-and-drop upload
+won't work there.
+
+`vendor/winit` is winit 0.30.13 with one small patch that reports the cursor position during an
+XDND drag, so drops can target a specific folder. See `vendor/winit/PATCHED.md`.
+
 ## Where things are stored
 
 - `~/.config/gdriveoperator/`: `client.json` (OAuth client) and `token.json` (refresh
   token, mode 0600), plus `settings.json`
+- downloaded-file locations live in the cache database's `local_copies` table
 - `~/.local/share/gdriveoperator/cache.sqlite3`: metadata cache (Settings → Rebuild cache
   wipes and re-lists it)
 

@@ -80,11 +80,13 @@ pub struct Settings {
     pub copy_link_after_upload: bool,
     pub poll_seconds: u64,
     pub dark_mode: Option<bool>,
+    /// Where downloads go (default: the OS Downloads folder).
+    pub download_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { copy_link_after_upload: true, poll_seconds: 15, dark_mode: None }
+        Settings { copy_link_after_upload: true, poll_seconds: 15, dark_mode: None, download_dir: None }
     }
 }
 

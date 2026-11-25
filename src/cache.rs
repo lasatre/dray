@@ -17,7 +17,9 @@ impl Cache {
              PRAGMA synchronous=NORMAL;
              PRAGMA temp_store=MEMORY;
              CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS local_copies (
+                 id TEXT PRIMARY KEY, path TEXT NOT NULL, modified TEXT NOT NULL DEFAULT '');",
         )?;
         Ok(Cache { conn })
     }
@@ -78,8 +80,28 @@ impl Cache {
         Ok(())
     }
 
+    /// Files downloaded to this machine: (file id, local path, Drive modifiedTime at download).
+    pub fn local_copies(&self) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT id, path, modified FROM local_copies")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn set_local_copy(&self, id: &str, path: &str, modified: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO local_copies (id, path, modified) VALUES (?1, ?2, ?3)",
+            params![id, path, modified],
+        )?;
+        Ok(())
+    }
+
+    pub fn forget_local_copy(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM local_copies WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn clear(&self) -> Result<()> {
-        self.conn.execute_batch("DELETE FROM files; DELETE FROM meta;")?;
+        self.conn.execute_batch("DELETE FROM files; DELETE FROM meta; DELETE FROM local_copies;")?;
         Ok(())
     }
 }

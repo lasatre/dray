@@ -362,7 +362,7 @@ impl Backend {
 
     fn op(&self, what: &'static str, f: impl FnOnce(&Backend, &Drive) -> Result<()> + Send + 'static) {
         let Some(drive) = self.drive() else {
-            self.send(Event::Toast { text: "Not signed in".into(), error: true });
+            self.send(Event::Toast { text: "Not signed in. Sign in again from the setup screen.".into(), error: true });
             return;
         };
         let b = self.clone();
@@ -374,14 +374,14 @@ impl Backend {
     }
 
     pub fn rename(&self, id: String, name: String) {
-        self.op("Rename failed", move |b, d| {
+        self.op("Couldn't rename", move |b, d| {
             b.apply(vec![d.rename(&id, &name)?]);
             Ok(())
         });
     }
 
     pub fn set_starred(&self, ids: Vec<String>, starred: bool) {
-        self.op("Star failed", move |b, d| {
+        self.op("Couldn't update the star", move |b, d| {
             for id in ids {
                 b.apply(vec![d.set_starred(&id, starred)?]);
             }
@@ -390,30 +390,31 @@ impl Backend {
     }
 
     pub fn set_trashed(&self, ids: Vec<String>, trashed: bool) {
-        self.op(if trashed { "Trash failed" } else { "Restore failed" }, move |b, d| {
+        self.op(if trashed { "Couldn't move to trash" } else { "Couldn't restore" }, move |b, d| {
             let n = ids.len();
             for id in ids {
                 b.apply(vec![d.set_trashed(&id, trashed)?]);
             }
-            let verb = if trashed { "Moved to trash" } else { "Restored" };
-            b.send(Event::Toast { text: format!("{verb}: {n} item(s)"), error: false });
+            let items = if n == 1 { "1 item".to_string() } else { format!("{n} items") };
+            let text = if trashed { format!("Moved {items} to trash.") } else { format!("Restored {items}.") };
+            b.send(Event::Toast { text, error: false });
             Ok(())
         });
     }
 
     pub fn move_to(&self, items: Vec<(String, Vec<String>)>, dest: String) {
-        self.op("Move failed", move |b, d| {
+        self.op("Couldn't move", move |b, d| {
             let n = items.len();
             for (id, old) in items {
                 b.apply(vec![d.move_to(&id, &dest, &old)?]);
             }
-            b.send(Event::Toast { text: format!("Moved {n} item(s)"), error: false });
+            b.send(Event::Toast { text: if n == 1 { "Moved 1 item.".into() } else { format!("Moved {n} items.") }, error: false });
             Ok(())
         });
     }
 
     pub fn create_folder(&self, name: String, parent: String) {
-        self.op("Create folder failed", move |b, d| {
+        self.op("Couldn't create the folder", move |b, d| {
             let f = d.create_folder(&name, &parent)?;
             b.apply(vec![f.clone()]);
             b.send(Event::Uploaded { file: f, single: false });
@@ -422,17 +423,17 @@ impl Backend {
     }
 
     pub fn share_and_copy(&self, file: DFile) {
-        self.op("Sharing failed", move |b, d| {
+        self.op("Couldn't share", move |b, d| {
             d.share_anyone(&file.id)?;
             let f = d.get_file(&file.id).unwrap_or(file);
-            b.send(Event::CopyText { text: f.view_link(), toast: "Shared (anyone with link) — link copied".into() });
+            b.send(Event::CopyText { text: f.view_link(), toast: "Anyone with the link can now view it. Link copied.".into() });
             b.apply(vec![f]);
             Ok(())
         });
     }
 
     pub fn content_search(&self, query: String) {
-        self.op("Content search failed", move |b, d| {
+        self.op("Couldn't search contents", move |b, d| {
             let files = d.search_content(&query)?;
             let ids = files.iter().map(|f| f.id.clone()).collect();
             b.apply(files);
@@ -451,10 +452,10 @@ impl Backend {
     /// Download files into `dir`. Files with an existing local copy (`Some(path)`) are refreshed
     /// in place. Every successful download is remembered so the app can open it locally.
     pub fn download(&self, files: Vec<(DFile, Option<PathBuf>)>, dir: PathBuf) {
-        self.op("Download failed", move |b, d| {
+        self.op("Couldn't download", move |b, d| {
             for (f, existing) in files {
                 if f.is_folder() {
-                    b.send(Event::Toast { text: format!("Skipping folder '{}'", f.name), error: true });
+                    b.send(Event::Toast { text: format!("Skipped “{}”: folders can't be downloaded.", f.name), error: true });
                     continue;
                 }
                 let id = b.inner.next_id.fetch_add(1, Ordering::Relaxed);
@@ -492,7 +493,7 @@ impl Backend {
 
     /// Upload files and/or directories (recursively) into `parent`.
     pub fn upload(&self, paths: Vec<PathBuf>, parent: String) {
-        self.op("Upload failed", move |b, d| {
+        self.op("Couldn't upload", move |b, d| {
             // Create folder structure first, collecting (file, parent) jobs.
             let mut jobs: VecDeque<(PathBuf, String)> = VecDeque::new();
             let mut stack: Vec<(PathBuf, String)> = paths.into_iter().map(|p| (p, parent.clone())).collect();
@@ -559,7 +560,7 @@ impl Backend {
             }
             if total > 1 || !errors.is_empty() {
                 b.send(Event::Toast {
-                    text: format!("Uploaded {}/{} file(s)", total - errors.len(), total),
+                    text: format!("Uploaded {} of {total} files.", total - errors.len()),
                     error: !errors.is_empty(),
                 });
             }

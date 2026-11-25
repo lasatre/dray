@@ -262,6 +262,62 @@ pub fn mono_small(text: impl Into<String>) -> RichText {
     RichText::new(text).text_style(TextStyle::Name(theme::MONO_SMALL.into()))
 }
 
+/// Lay out a sentence with its numbers (and units) in mono: "Uploaded 3 of 4 files",
+/// "Retrying in 5 s", "4.2 MB". Text inside “quotes” (file and folder names) is left alone.
+pub fn numbers_job(text: &str, font: egui::FontId, color: Color32) -> egui::text::LayoutJob {
+    const UNITS: [&str; 9] = ["B", "KB", "MB", "GB", "TB", "s", "ms", "min", "%"];
+    let mono = egui::FontId::monospace(font.size);
+    let plain = egui::TextFormat::simple(font, color);
+    let numeric = egui::TextFormat::simple(mono, color);
+    let mut job = egui::text::LayoutJob::default();
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let byte = |i: usize| chars.get(i).map_or(text.len(), |c| c.0);
+    let (mut i, mut start, mut quoted) = (0, 0, false);
+    while i < chars.len() {
+        let c = chars[i].1;
+        match c {
+            '“' => quoted = true,
+            '”' => quoted = false,
+            _ => {}
+        }
+        let at_word_start = i == 0 || matches!(chars[i - 1].1, ' ' | '(' | '\n');
+        if quoted || !c.is_ascii_digit() || !at_word_start {
+            i += 1;
+            continue;
+        }
+        // A number: digits with inner , . : separators.
+        let mut j = i;
+        while j < chars.len()
+            && (chars[j].1.is_ascii_digit()
+                || (matches!(chars[j].1, ',' | '.' | ':') && chars.get(j + 1).is_some_and(|n| n.1.is_ascii_digit())))
+        {
+            j += 1;
+        }
+        // An optional unit: "%" or " MB", " s", ...
+        if chars.get(j).is_some_and(|c| c.1 == '%') {
+            j += 1;
+        } else if chars.get(j).is_some_and(|c| c.1 == ' ') {
+            let rest = &text[byte(j + 1)..];
+            if let Some(u) = UNITS.iter().find(|u| {
+                rest.starts_with(**u) && !rest[u.len()..].starts_with(|c: char| c.is_alphanumeric())
+            }) {
+                j += 1 + u.chars().count();
+            }
+        }
+        job.append(&text[byte(start)..byte(i)], 0.0, plain.clone());
+        job.append(&text[byte(i)..byte(j)], 0.0, numeric.clone());
+        start = j;
+        i = j;
+    }
+    job.append(&text[byte(start)..], 0.0, plain);
+    job
+}
+
+/// A label whose numbers and units are set in mono (see [`numbers_job`]).
+pub fn numbers_label(ui: &mut Ui, text: &str, font: egui::FontId, color: Color32) -> Response {
+    ui.label(numbers_job(text, font, color))
+}
+
 /// `ui-small` at weight 600 in ink-muted: section labels in panes and dialogs.
 pub fn section_label(ui: &mut Ui, text: &str) -> Response {
     let p = theme::of(ui);
@@ -348,4 +404,30 @@ pub fn focus_ring(ctx: &egui::Context, keyboard: bool) {
         Stroke::new(w, p.focus_ring),
         StrokeKind::Middle,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::numbers_job;
+    use eframe::egui::{Color32, FontFamily, FontId};
+
+    fn mono_parts(text: &str) -> Vec<String> {
+        let job = numbers_job(text, FontId::proportional(13.0), Color32::BLACK);
+        job.sections
+            .iter()
+            .filter(|s| s.format.font_id.family == FontFamily::Monospace)
+            .map(|s| job.text[s.byte_range.start.0..s.byte_range.end.0].to_string())
+            .collect()
+    }
+
+    #[test]
+    fn numbers_and_units_are_mono() {
+        assert_eq!(mono_parts("Couldn't reach Google. Retrying in 5 s."), ["5 s"]);
+        assert_eq!(mono_parts("Uploaded 3 of 4 files."), ["3", "4"]);
+        assert_eq!(mono_parts("1,204 items in the local index, built in 38 ms"), ["1,204", "38 ms"]);
+        assert_eq!(mono_parts("Saved 4.2 MB (62%)"), ["4.2 MB", "62%"]);
+        // Names stay in the interface face.
+        assert_eq!(mono_parts("Uploaded “Report 2024.pdf”."), Vec::<String>::new());
+        assert_eq!(mono_parts("Report_2024 v2"), Vec::<String>::new());
+    }
 }

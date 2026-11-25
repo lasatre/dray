@@ -330,7 +330,7 @@ impl Drive {
 
         if len <= SIMPLE_UPLOAD_MAX {
             let data = std::fs::read(path)?;
-            let boundary = format!("gdo{}", std::process::id());
+            let boundary = format!("dray{}", std::process::id());
             let mut body = Vec::with_capacity(data.len() + 512);
             write!(
                 body,

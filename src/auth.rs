@@ -169,7 +169,7 @@ impl Auth {
 pub struct AuthRevoked;
 impl std::fmt::Display for AuthRevoked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sign-in expired or was revoked; please sign in again")
+        write!(f, "sign-in expired or was revoked. Sign in again")
     }
 }
 impl std::error::Error for AuthRevoked {}

@@ -191,6 +191,8 @@ pub struct App {
     // status
     sync: SyncState,
     synced_at: Option<Instant>,
+    /// When the last sync error arrived (the next attempt is one poll interval later).
+    offline_at: Option<Instant>,
     toasts: Vec<Toast>,
     transfers: Vec<(u64, TransferInfo, Option<f32>)>,
     /// Transfers that failed this session (shown in their row until retried or dismissed).
@@ -270,6 +272,7 @@ impl App {
             keyboard_focus: false,
             sync: SyncState::Idle,
             synced_at: None,
+            offline_at: None,
             toasts: Vec::new(),
             transfers: Vec::new(),
             failed: Vec::new(),
@@ -363,7 +366,7 @@ impl App {
                     if let View::Folder(id) = &self.view {
                         if !self.files.is_empty() && !self.files.contains_key(id) && !self.drive_names.contains_key(id) {
                             self.view = View::MyDrive;
-                            self.toast("Startup folder not found — showing My Drive", true);
+                            self.toast("Couldn't find the startup folder. Showing My Drive.", true);
                         }
                     }
                 }
@@ -394,19 +397,24 @@ impl App {
                     self.drives = drives;
                     self.index_dirty = true;
                 }
-                Event::Sync(s) => self.sync = s,
+                Event::Sync(s) => {
+                    if matches!(s, SyncState::Offline(_)) {
+                        self.offline_at = Some(Instant::now());
+                    }
+                    self.sync = s;
+                }
                 Event::SyncedAt(t) => self.synced_at = Some(t),
                 Event::LoggedIn => {
                     self.login_waiting = false;
                     self.screen = Screen::Main;
                     self.focus_search = true;
-                    self.toast("Signed in — building local index…", false);
+                    self.toast("Signed in. Building the local index…", false);
                 }
                 Event::AuthRequired(msg) => {
                     self.login_waiting = false;
                     self.screen = Screen::Setup;
                     if !msg.is_empty() {
-                        self.setup_msg = Some((msg, true));
+                        self.setup_msg = Some((sentence(&msg), true));
                     }
                 }
                 Event::Toast { text, error } => self.toast(text, error),
@@ -425,9 +433,9 @@ impl App {
                 Event::Uploaded { file, single } => {
                     if single && self.settings.copy_link_after_upload {
                         ctx.copy_text(file.view_link());
-                        self.toast(format!("Uploaded '{}' — link copied", file.name), false);
+                        self.toast(format!("Uploaded “{}”. Link copied.", file.name), false);
                     } else if single {
-                        self.toast(format!("Uploaded '{}'", file.name), false);
+                        self.toast(format!("Uploaded “{}”.", file.name), false);
                     }
                     self.select_only(file.id.clone());
                     self.scroll_to_cursor = true;
@@ -436,11 +444,11 @@ impl App {
                     if self.content_pending.as_deref() == Some(query.as_str()) {
                         self.content_pending = None;
                         let n = ids.len();
+                        if n == 0 {
+                            self.toast(format!("No files on Google Drive contain “{query}”."), false);
+                        }
                         self.content = Some((query, ids));
                         self.rows_dirty = true;
-                        if n == 0 {
-                            self.toast("No content matches", false);
-                        }
                     }
                 }
                 Event::CopyText { text, toast } => {
@@ -453,7 +461,7 @@ impl App {
                     }
                 }
                 Event::Downloaded { id, path, modified } => {
-                    self.toast(format!("Saved {} — double-click to open it", path.display()), false);
+                    self.toast(format!("Saved to {}. Double-click the file to open it.", path.display()), false);
                     self.local.insert(id, LocalCopy { path, modified });
                 }
             }
@@ -754,7 +762,7 @@ impl App {
                     if let Err(e) = open::that_detached(&lc.path) {
                         self.toast(format!("Couldn't open {}: {e}", lc.path.display()), true);
                     } else if lc.outdated(&f) {
-                        self.toast(format!("Drive has a newer version of '{}' — Ctrl+S updates your copy", f.name), false);
+                        self.toast(format!("Drive has a newer version of “{}”. Press Ctrl+S to update your copy.", f.name), false);
                     }
                     return;
                 }
@@ -777,7 +785,7 @@ impl App {
     fn reveal(&mut self, id: &str) {
         let Some(f) = self.files.get(id).cloned() else { return };
         let Some(parent) = f.parents.first() else {
-            self.toast("This item has no visible parent folder", true);
+            self.toast("Couldn't show the folder: its parent isn't visible to this account.", true);
             return;
         };
         let v = self.folder_view(parent);
@@ -797,11 +805,11 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n");
         ctx.copy_text(text);
-        let what = if download { "Download link" } else { "Link" };
+        let what = if download { "download link" } else { "link" };
         if t.len() == 1 {
-            self.toast(format!("{what} copied: {}", t[0].name), false);
+            self.toast(format!("Copied {what} to “{}”.", t[0].name), false);
         } else {
-            self.toast(format!("{} {what}s copied", t.len()), false);
+            self.toast(format!("Copied {} {what}s.", fmt_count(t.len())), false);
         }
     }
 
@@ -876,12 +884,12 @@ impl App {
             Action::CopyId => {
                 let ids: Vec<String> = self.targets().iter().map(|f| f.id.clone()).collect();
                 ctx.copy_text(ids.join("\n"));
-                self.toast("ID copied", false);
+                self.toast("Copied ID.", false);
             }
             Action::CopyName => {
                 let names: Vec<String> = self.targets().iter().map(|f| f.name.clone()).collect();
                 ctx.copy_text(names.join("\n"));
-                self.toast("Name copied", false);
+                self.toast("Copied name.", false);
             }
             Action::Reveal(id) => self.reveal(&id),
             Action::Rename => {
@@ -921,7 +929,7 @@ impl App {
             Action::ForgetLocal(id) => {
                 self.local.remove(&id);
                 self.backend.forget_local_copy(&id);
-                self.toast("Local copy forgotten (the file itself was not deleted)", false);
+                self.toast("Dray no longer tracks the local copy. The file itself wasn't deleted.", false);
             }
             Action::Share => {
                 if let Some(f) = self.targets().first() {
@@ -931,7 +939,7 @@ impl App {
             Action::Cut => {
                 self.cut = self.targets().iter().map(|f| (f.id.clone(), f.parents.clone())).collect();
                 if !self.cut.is_empty() {
-                    self.toast(format!("{} item(s) ready to move — open a folder and press Ctrl+V", self.cut.len()), false);
+                    self.toast(format!("{} ready to move. Open a folder and press Ctrl+V.", plural(self.cut.len(), "item")), false);
                 }
             }
             Action::Paste => {
@@ -943,7 +951,7 @@ impl App {
                         let items = std::mem::take(&mut self.cut);
                         self.backend.move_to(items, dest);
                     }
-                    None => self.toast("Open a folder to paste into", true),
+                    None => self.toast("Open a folder first, then press Ctrl+V.", true),
                 }
             }
             Action::Nav(v) => self.navigate(v),
@@ -955,7 +963,7 @@ impl App {
             }
             Action::Upload => {
                 let Some(parent) = self.upload_target() else {
-                    self.toast("Still syncing — try again in a moment", true);
+                    self.toast("Still loading the file list. Try again when sync finishes.", true);
                     return;
                 };
                 let tx = self.ui_tx.clone();
@@ -991,7 +999,7 @@ impl App {
                 let v = self.folder_view(&id);
                 self.settings.start_view = Some(v.to_setting());
                 self.settings.save(&self.paths);
-                self.toast(format!("“{}” will open at startup", self.folder_name(&id)), false);
+                self.toast(format!("Dray will open “{}” at startup.", self.folder_name(&id)), false);
             }
             Action::Sort(key) => {
                 self.sort = match self.sort {
@@ -1195,7 +1203,7 @@ impl App {
         match std::fs::read_to_string(&path).map_err(anyhow::Error::from).and_then(|t| ClientCreds::parse(&t)) {
             Ok(c) => {
                 self.creds = c;
-                self.setup_msg = Some(("Credentials loaded. Click “Sign in with Google”.".into(), false));
+                self.setup_msg = Some(("Credentials loaded. Next, select “Sign in with Google”.".into(), false));
             }
             Err(e) => self.setup_msg = Some((format!("{}: {e:#}", path.display()), true)),
         }
@@ -1215,7 +1223,7 @@ impl App {
                     brand::mark(ui, 48.0);
                     ui.add_space(theme::SPACE_2);
                     ui.label(RichText::new("Dray").font(theme::semibold_font(theme::FONT_TITLE)).color(p.ink));
-                    ui.label(RichText::new("A fast local front-end for Google Drive").weak());
+                    ui.label(RichText::new("A fast, native desktop client for Google Drive").weak());
                     ui.add_space(theme::SPACE_6);
                 });
                 ui.vertical_centered(|ui| {
@@ -1229,13 +1237,13 @@ impl App {
                         .show(ui, |ui| {
                             ui.set_width(width - 2.0 * theme::SPACE_8);
                             ui.with_layout(Layout::top_down(Align::LEFT), |ui| {
-                                ui.heading("One-time setup: your own Google OAuth client");
+                                ui.heading("One-time setup: a Google OAuth client");
                                 ui.add_space(theme::SPACE_2);
                                 for line in [
                                     "1. In Google Cloud Console create a project and enable the Google Drive API.",
                                     "2. Configure the OAuth consent screen (External; add yourself as a test user).",
                                     "3. Credentials → Create credentials → OAuth client ID → Desktop app.",
-                                    "4. Download the JSON and drop it on this window (or browse / paste below).",
+                                    "4. Download the JSON file and drop it on this window, or choose it or paste the values below.",
                                 ] {
                                     ui.label(line);
                                 }
@@ -1249,7 +1257,7 @@ impl App {
                                             "https://console.cloud.google.com/apis/library/drive.googleapis.com",
                                         );
                                     }
-                                    if ui.add(Button::secondary("Browse for JSON…")).clicked() {
+                                    if ui.add(Button::secondary("Choose JSON file…")).clicked() {
                                         let tx = self.ui_tx.clone();
                                         let ctx = ctx.clone();
                                         std::thread::spawn(move || {
@@ -1279,7 +1287,7 @@ impl App {
                                     }
                                     if self.login_waiting {
                                         ui.add(egui::Spinner::new().color(p.ink_muted));
-                                        ui.label("Waiting for you to finish in the browser…");
+                                        ui.label("Waiting for sign-in to finish in the browser…");
                                     }
                                 });
                                 if let Some((msg, err)) = &self.setup_msg {
@@ -1288,7 +1296,7 @@ impl App {
                                     ui.colored_label(color, msg);
                                 }
                                 ui.add_space(theme::SPACE_4);
-                                ui.label(RichText::new("Tokens are stored in (readable only by you):").small().weak());
+                                ui.label(RichText::new("Sign-in tokens are stored here, readable only by this user account:").small().weak());
                                 ui.label(widgets::mono_small(self.paths.config_dir.display().to_string()).weak());
                                 ui.label(RichText::new("Metadata cache:").small().weak());
                                 ui.label(widgets::mono_small(self.paths.cache_file().display().to_string()).weak());
@@ -1352,7 +1360,8 @@ impl App {
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(theme::SPACE_2);
-                    ui.label(RichText::new(format!("{} items cached", self.files.len())).small().weak());
+                    let text = format!("{} cached", plural(self.files.len(), "item"));
+                    widgets::numbers_label(ui, &text, theme::ui_font(theme::FONT_UI_SMALL), p.ink_muted);
                 });
             });
         });
@@ -1409,7 +1418,7 @@ impl App {
                 if let Some(id) = &folder {
                     let on = scope.is_some();
                     let tip = if on {
-                        format!("Searching only “{}” and its subfolders — click to search everything (Ctrl+Shift+F)", self.folder_name(id))
+                        format!("Searching only “{}” and its subfolders. Select to search everywhere (Ctrl+Shift+F).", self.folder_name(id))
                     } else {
                         format!("Only search “{}” and its subfolders (Ctrl+Shift+F)", self.folder_name(id))
                     };
@@ -1423,7 +1432,7 @@ impl App {
                 }
                 if self.is_searching() {
                     let busy = self.content_pending.is_some();
-                    let label = if busy { "Searching…" } else { "In contents" };
+                    let label = if busy { "Searching…" } else { "Search contents" };
                     if ui
                         .add_enabled(!busy, Button::secondary(label))
                         .on_hover_text("Search inside file contents on Drive (Shift+Enter)")
@@ -1433,7 +1442,7 @@ impl App {
                     }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(Button::primary("Upload").icon(Icon::Upload)).on_hover_text("Upload files (Ctrl+U) — or drop files on the window").clicked() {
+                    if ui.add(Button::primary("Upload").icon(Icon::Upload)).on_hover_text("Upload files (Ctrl+U). You can also drop files on the window.").clicked() {
                         actions.push(Action::Upload);
                     }
                     if ui.add(Button::secondary("New folder").icon(Icon::FolderPlus)).on_hover_text("New folder (Ctrl+Shift+N)").clicked() {
@@ -1452,11 +1461,11 @@ impl App {
             ui.horizontal(|ui| {
                 ui.set_min_height(theme::CONTROL_H);
                 if self.content_active() {
-                    ui.label(RichText::new(format!("Content matches for “{}”", self.query.trim())).font(theme::semibold_font(theme::FONT_UI_ROW)));
-                    ui.label(RichText::new("(from Drive)").weak());
+                    ui.label(RichText::new(format!("Files containing “{}”", self.query.trim())).font(theme::semibold_font(theme::FONT_UI_ROW)));
+                    ui.label(RichText::new("Searched on Google Drive").weak());
                 } else if self.is_searching() {
                     let n = self.total_matches;
-                    ui.label(RichText::new(format!("{n} result{}", if n == 1 { "" } else { "s" })).font(theme::semibold_font(theme::FONT_UI_ROW)));
+                    widgets::numbers_label(ui, &plural(n, "result"), theme::semibold_font(theme::FONT_UI_ROW), p.ink);
                     if let Some(id) = self.search_scope() {
                         ui.label(format!("in “{}”", self.folder_name(&id)));
                         if ui.add(Button::ghost("Search everywhere").icon(Icon::X)).clicked() {
@@ -1464,7 +1473,8 @@ impl App {
                         }
                     }
                     if self.total_matches > self.rows.len() {
-                        ui.label(RichText::new(format!("(showing top {})", self.rows.len())).weak());
+                        let text = format!("Showing the first {}", fmt_count(self.rows.len()));
+                        widgets::numbers_label(ui, &text, theme::ui_font(theme::FONT_UI_ROW), p.ink_muted);
                     }
                     ui.label(widgets::mono_small(format!("{:.1} ms", self.search_time.as_secs_f64() * 1000.0)).weak());
                 } else {
@@ -1560,11 +1570,11 @@ impl App {
         egui::Panel::bottom("status").frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.set_min_height(theme::ROW_COMPACT);
-                let note = |ui: &mut egui::Ui, text: String| ui.label(RichText::new(text).small().weak());
+                let note = |ui: &mut egui::Ui, text: String| widgets::numbers_label(ui, &text, theme::ui_font(theme::FONT_UI_SMALL), p.ink_muted);
                 match &self.sync {
                     SyncState::Initial { files } => {
                         widgets::status_pill(ui, Status::Syncing);
-                        note(ui, format!("Indexing Drive… {files} items"));
+                        note(ui, format!("Indexing Drive: {} so far", plural(*files, "item")));
                     }
                     SyncState::Incremental => {
                         widgets::status_pill(ui, Status::Syncing);
@@ -1572,12 +1582,20 @@ impl App {
                     }
                     SyncState::Offline(e) => {
                         widgets::status_pill(ui, Status::Offline).on_hover_text(e);
-                        note(ui, "Offline / sync error".into()).on_hover_text(e);
+                        let since = self.offline_at.map(|t| t.elapsed()).unwrap_or_default();
+                        let left = Duration::from_secs(self.settings.poll_seconds).saturating_sub(since).as_secs();
+                        let text = if left == 0 {
+                            "Couldn't reach Google. Retrying now.".to_string()
+                        } else {
+                            format!("Couldn't reach Google. Retrying in {left} s.")
+                        };
+                        note(ui, text).on_hover_text(e);
+                        ui.ctx().request_repaint_after(Duration::from_secs(1));
                     }
                     SyncState::Idle => match self.synced_at {
                         Some(t) => {
                             widgets::status_pill(ui, Status::Synced);
-                            note(ui, format!("Up to date · checked {}", ago(t.elapsed())));
+                            note(ui, format!("Checked {}", ago(t.elapsed())));
                             ui.ctx().request_repaint_after(Duration::from_secs(5));
                         }
                         None if !self.backend.has_session() => {
@@ -1591,7 +1609,9 @@ impl App {
                 if !self.failed.is_empty() {
                     ui.separator();
                     widgets::status_pill(ui, Status::Failed);
-                    note(ui, format!("{} transfer(s)", self.failed.len()));
+                    let n = self.failed.len();
+                    let list = self.failed.iter().map(|(t, e)| format!("{}: {e}", t.name)).collect::<Vec<_>>().join("\n");
+                    note(ui, format!("{} failed", plural(n, "transfer"))).on_hover_text(list);
                 }
                 for (_, info, frac) in &self.transfers {
                     ui.separator();
@@ -1606,10 +1626,10 @@ impl App {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if !self.selected.is_empty() {
-                        note(ui, format!("{} selected", self.selected.len()));
+                        note(ui, format!("{} selected", plural(self.selected.len(), "item")));
                     }
                     if !self.cut.is_empty() {
-                        note(ui, format!("{} to move", self.cut.len()));
+                        note(ui, format!("{} to move", plural(self.cut.len(), "item")));
                         ui.add(Icon::Scissors.image(theme::ICON, p.ink_muted));
                     }
                 });
@@ -1647,18 +1667,25 @@ impl App {
                 if !self.cache_loaded {
                     ui.add(egui::Spinner::new().color(p.ink_muted));
                 } else if self.is_searching() {
-                    ui.label(RichText::new("No matches in the local index.").weak());
+                    ui.label(RichText::new("No file names match.").weak());
                     ui.add_space(theme::SPACE_2);
-                    if ui.add(Button::secondary("Search file contents on Drive")).clicked() {
+                    if ui.add(Button::secondary("Search contents on Google Drive")).clicked() {
                         actions.push(Action::ContentSearch);
                     }
                 } else if matches!(self.sync, SyncState::Initial { .. }) {
                     ui.add(egui::Spinner::new().color(p.ink_muted));
-                    ui.label(RichText::new("Building local index…").weak());
+                    ui.label(RichText::new("Building the local index…").weak());
                 } else {
                     brand::mark(ui, 32.0);
                     ui.add_space(theme::SPACE_2);
-                    ui.label(RichText::new("Empty").weak());
+                    let text = match self.view {
+                        View::Recent => "No recent files.",
+                        View::Starred => "No starred files.",
+                        View::Shared => "Nothing is shared with this account.",
+                        View::Trash => "Trash is empty.",
+                        View::MyDrive | View::Folder(_) => "This folder is empty.",
+                    };
+                    ui.label(RichText::new(text).weak());
                 }
             });
             return;
@@ -1831,12 +1858,12 @@ impl App {
                             if let Some(lc) = self.local.get(&f.id) {
                                 if lc.outdated(f) {
                                     ui.add(Icon::HardDriveDownload.image(theme::ICON, p.warning)).on_hover_text(format!(
-                                        "Downloaded to {}\nDrive has a newer version (Ctrl+S to update)",
+                                        "Downloaded to {}\nDrive has a newer version. Press Ctrl+S to update it.",
                                         lc.path.display()
                                     ));
                                 } else {
                                     ui.add(Icon::HardDriveDownload.image(theme::ICON, p.success))
-                                        .on_hover_text(format!("Downloaded to {}\nDouble-click opens it", lc.path.display()));
+                                        .on_hover_text(format!("Downloaded to {}\nDouble-click to open the local copy.", lc.path.display()));
                                 }
                             }
                         });
@@ -1871,7 +1898,7 @@ impl App {
                             let text = if transfer.is_some() {
                                 "Downloading".to_string()
                             } else if failure.is_some() {
-                                "Not downloaded".to_string()
+                                "Ctrl+S to retry".to_string()
                             } else {
                                 fmt_time(f.modified_time.as_deref())
                             };
@@ -1935,7 +1962,7 @@ impl App {
                             if !is_folder && !f.is_google_native() {
                                 item(ui, Icon::Download, t("Copy direct download link"), "Ctrl+Shift+D", Action::CopyDownloadLink);
                             }
-                            item(ui, Icon::Share2, t("Share: anyone with link + copy"), "Ctrl+Shift+S", Action::Share);
+                            item(ui, Icon::Share2, t("Share with link and copy"), "Ctrl+Shift+S", Action::Share);
                             item(ui, Icon::Type, t("Copy name"), "", Action::CopyName);
                             item(ui, Icon::Hash, t("Copy ID"), "", Action::CopyId);
                             ui.separator();
@@ -1947,7 +1974,7 @@ impl App {
                             }
                             item(ui, Icon::Pencil, t("Rename"), "F2", Action::Rename);
                             item(ui, if f.starred { Icon::StarOff } else { Icon::Star }, t(if f.starred { "Unstar" } else { "Star" }), "", Action::Star(!f.starred));
-                            item(ui, Icon::Scissors, t("Cut (move)"), "Ctrl+X", Action::Cut);
+                            item(ui, Icon::Scissors, t("Cut to move"), "Ctrl+X", Action::Cut);
                             if let Some(t2) = f.folder_target() {
                                 item(ui, Icon::Pin, t("Open this folder at startup"), "", Action::SetStartFolder(t2.to_string()));
                             }
@@ -2192,15 +2219,18 @@ impl App {
                 ui.add_space(theme::SPACE_2);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = theme::SPACE_1;
-                    ui.label(widgets::mono_small(self.files.len().to_string()));
-                    ui.label("items, built in");
-                    ui.label(widgets::mono_small(format!("{:.0} ms", self.build_cost.as_secs_f64() * 1000.0)));
+                    let text = format!(
+                        "{} in the local index, built in {:.0} ms",
+                        plural(self.files.len(), "item"),
+                        self.build_cost.as_secs_f64() * 1000.0
+                    );
+                    widgets::numbers_label(ui, &text, theme::ui_font(theme::FONT_UI_ROW), theme::of(ui).ink);
                 });
                 ui.add_space(theme::SPACE_2);
                 ui.horizontal(|ui| {
-                    if ui.add(Button::secondary("Rebuild cache")).on_hover_text("Re-list everything from Drive").clicked() {
+                    if ui.add(Button::secondary("Rebuild cache")).on_hover_text("Download the full file list from Google Drive again").clicked() {
                         self.backend.rebuild_cache();
-                        self.toast("Rebuilding local index…", false);
+                        self.toast("Rebuilding the local index…", false);
                     }
                     if ui.add(Button::danger("Sign out")).clicked() {
                         self.backend.sign_out();
@@ -2220,14 +2250,14 @@ impl App {
                             ("Shift+Enter", "Search inside file contents (Drive)"),
                             ("Ctrl+C / Ctrl+Shift+C", "Copy link(s)"),
                             ("Ctrl+Shift+D", "Copy direct download link"),
-                            ("Ctrl+Shift+S", "Share with anyone with link + copy"),
+                            ("Ctrl+Shift+S", "Share with link and copy"),
                             ("Ctrl+O", "Open in browser"),
                             ("Ctrl+S", "Download (or update the local copy)"),
                             ("Ctrl+U / drag & drop", "Upload (drop onto a folder to upload into it)"),
                             ("Ctrl+Shift+N", "New folder"),
                             ("F2", "Rename"),
                             ("Delete", "Move to trash / restore"),
-                            ("Ctrl+X, Ctrl+V", "Move items to another folder"),
+                            ("Ctrl+X, then Ctrl+V", "Move items to another folder"),
                             ("Backspace / Alt+↑", "Parent folder"),
                             ("Alt+← / Alt+→", "Back / forward"),
                             ("Esc", "Clear search"),
@@ -2270,7 +2300,8 @@ impl App {
                                     if t.error {
                                         widgets::status_pill(ui, Status::Failed);
                                     }
-                                    ui.add(egui::Label::new(RichText::new(&t.text).color(theme::of(ui).ink)).wrap());
+                                    let job = widgets::numbers_job(&t.text, theme::ui_font(theme::FONT_UI_ROW), theme::of(ui).ink);
+                                    ui.add(egui::Label::new(job).wrap());
                                 });
                             });
                     }
@@ -2340,7 +2371,7 @@ impl App {
             }
             let text = match &target {
                 Some((_, name)) => format!("Drop to upload into “{name}”"),
-                None => "Still syncing — can't upload yet".into(),
+                None => "Can't upload yet: still loading the file list".into(),
             };
             let galley = painter.layout_no_wrap(text, theme::semibold_font(theme::FONT_UI_TITLE), p.on_brand);
             let pill = egui::Rect::from_center_size(
@@ -2354,10 +2385,10 @@ impl App {
             self.drop_hover = None;
             match target {
                 Some((parent, name)) => {
-                    self.toast(format!("Uploading {} item(s) into “{name}”…", dropped.len()), false);
+                    self.toast(format!("Uploading {} to “{name}”…", plural(dropped.len(), "item")), false);
                     self.backend.upload(dropped, parent);
                 }
-                None => self.toast("Still syncing — try again in a moment", true),
+                None => self.toast("Still loading the file list. Try again when sync finishes.", true),
             }
         }
     }
@@ -2464,10 +2495,38 @@ fn ago(d: Duration) -> String {
     if s < 5 {
         "just now".into()
     } else if s < 60 {
-        format!("{s}s ago")
+        format!("{s} s ago")
     } else {
-        format!("{}m ago", s / 60)
+        format!("{} min ago", s / 60)
     }
+}
+
+/// Error text as a sentence: capitalized, ending in a period.
+fn sentence(msg: &str) -> String {
+    let mut c = msg.trim().chars();
+    let mut out: String = c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default();
+    if !out.ends_with(['.', '?']) {
+        out.push('.');
+    }
+    out
+}
+
+/// 1204 -> "1,204"
+fn fmt_count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// "1 file", "1,204 files"
+fn plural(n: usize, noun: &str) -> String {
+    format!("{} {noun}{}", fmt_count(n), if n == 1 { "" } else { "s" })
 }
 
 /// Show a file in the system file manager, selected if the platform supports it.

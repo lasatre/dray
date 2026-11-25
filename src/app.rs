@@ -3,6 +3,8 @@ use crate::config::{ClientCreds, Paths, Settings};
 use crate::index::{Index, Query, Roots};
 use crate::model::{DFile, Kind, SharedDrive};
 use crate::pointer::PointerProbe;
+use crate::brand;
+use crate::icons::Icon;
 use crate::theme;
 use crate::widgets::{self, Button, Status};
 use eframe::egui::{self, Align, Id, Key, Layout, Modifiers, RichText, Sense};
@@ -204,6 +206,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: Paths) -> anyhow::Result<App> {
         let ctx = cc.egui_ctx.clone();
         theme::install(&ctx);
+        egui_extras::install_image_loaders(&ctx);
         let settings = Settings::load(&paths);
         match settings.dark_mode {
             Some(true) => ctx.set_theme(egui::Theme::Dark),
@@ -1209,6 +1212,8 @@ impl App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(theme::SPACE_12);
+                    brand::mark(ui, 48.0);
+                    ui.add_space(theme::SPACE_2);
                     ui.label(RichText::new("Dray").font(theme::semibold_font(theme::FONT_TITLE)).color(p.ink));
                     ui.label(RichText::new("A fast local front-end for Google Drive").weak());
                     ui.add_space(theme::SPACE_6);
@@ -1306,7 +1311,7 @@ impl App {
             let cur = self.view.clone();
             let searching = self.is_searching();
             let hover = self.drop_hover.as_ref().map(|h| h.0.clone());
-            let mut item = |ui: &mut egui::Ui, label: &str, v: View, actions: &mut Vec<Action>| {
+            let mut item = |ui: &mut egui::Ui, icon: Icon, label: &str, v: View, actions: &mut Vec<Action>| {
                 let drop_id = match &v {
                     View::MyDrive => self.my_drive.clone(),
                     View::Folder(id) => Some(id.clone()),
@@ -1314,7 +1319,7 @@ impl App {
                 };
                 let selected = !searching && cur == v;
                 let drop = drop_id.is_some() && drop_id == hover;
-                let r = widgets::nav_item(ui, label, selected, drop);
+                let r = widgets::nav_item(ui, icon, label, selected, drop);
                 if r.clicked() {
                     actions.push(Action::Nav(v));
                 }
@@ -1322,11 +1327,11 @@ impl App {
                     targets.push((r.rect, id, label.to_string()));
                 }
             };
-            item(ui, "🏠  My Drive", View::MyDrive, actions);
-            item(ui, "🕘  Recent", View::Recent, actions);
-            item(ui, "⭐  Starred", View::Starred, actions);
-            item(ui, "👥  Shared with me", View::Shared, actions);
-            item(ui, "🗑  Trash", View::Trash, actions);
+            item(ui, Icon::HardDrive, "My Drive", View::MyDrive, actions);
+            item(ui, Icon::Clock, "Recent", View::Recent, actions);
+            item(ui, Icon::Star, "Starred", View::Starred, actions);
+            item(ui, Icon::Users, "Shared with me", View::Shared, actions);
+            item(ui, Icon::Trash2, "Trash", View::Trash, actions);
             if !self.drives.is_empty() {
                 ui.add_space(theme::SPACE_4);
                 ui.horizontal(|ui| {
@@ -1335,15 +1340,15 @@ impl App {
                 });
                 ui.add_space(theme::SPACE_1);
                 for d in self.drives.clone() {
-                    item(ui, &format!("🖴  {}", d.name), View::Folder(d.id.clone()), actions);
+                    item(ui, Icon::Server, &d.name, View::Folder(d.id.clone()), actions);
                 }
             }
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.y = theme::SPACE_1;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = theme::SPACE_1;
-                    toggle_settings = ui.add(Button::ghost("⚙ Settings")).clicked();
-                    open_about = ui.add(Button::ghost("About")).clicked();
+                    toggle_settings = ui.add(Button::ghost("Settings").icon(Icon::Settings)).clicked();
+                    open_about = ui.add(Button::ghost("About").icon(Icon::Info)).clicked();
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(theme::SPACE_2);
@@ -1368,13 +1373,13 @@ impl App {
         egui::Panel::top("top").frame(frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = theme::SPACE_1;
-                if ui.add_enabled(!self.back.is_empty() || self.is_searching(), Button::ghost("◀")).on_hover_text("Back (Alt+←)").clicked() {
+                if ui.add_enabled(!self.back.is_empty() || self.is_searching(), Button::toolbar(Icon::ArrowLeft)).on_hover_text("Back (Alt+←)").clicked() {
                     self.go_back();
                 }
-                if ui.add_enabled(!self.forward.is_empty(), Button::ghost("▶")).on_hover_text("Forward (Alt+→)").clicked() {
+                if ui.add_enabled(!self.forward.is_empty(), Button::toolbar(Icon::ArrowRight)).on_hover_text("Forward (Alt+→)").clicked() {
                     self.go_forward();
                 }
-                if ui.add_enabled(matches!(self.view, View::Folder(_)), Button::ghost("⬆")).on_hover_text("Parent folder (Alt+↑)").clicked() {
+                if ui.add_enabled(matches!(self.view, View::Folder(_)), Button::toolbar(Icon::ArrowUp)).on_hover_text("Parent folder (Alt+↑)").clicked() {
                     self.go_up();
                 }
                 ui.add_space(theme::SPACE_2);
@@ -1384,10 +1389,23 @@ impl App {
                 let right_w = if folder.is_some() { 440.0 } else { 320.0 };
                 let w = (ui.available_width() - right_w).max(200.0);
                 let hint = match &scope {
-                    Some(id) => format!("🔍  Search in “{}” and its subfolders", self.folder_name(id)),
-                    None => "🔍  Search all files   (type:pdf  ext:psd  is:starred  \"exact phrase\")".into(),
+                    Some(id) => format!("Search in “{}” and its subfolders", self.folder_name(id)),
+                    None => "Search all files   (type:pdf  ext:psd  is:starred  \"exact phrase\")".into(),
                 };
-                let resp = ui.add(text_input(&mut self.query).id(search_id()).hint_text(hint).desired_width(w));
+                let search_margin = egui::Margin {
+                    left: (theme::SPACE_2 + theme::ICON + theme::SPACE_2) as i8,
+                    right: theme::SPACE_2 as i8,
+                    top: 5,
+                    bottom: 5,
+                };
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.query).id(search_id()).hint_text(hint).desired_width(w).margin(search_margin),
+                );
+                let icon_rect = egui::Rect::from_min_size(
+                    egui::pos2(resp.rect.left() + theme::SPACE_2, resp.rect.center().y - theme::ICON / 2.0),
+                    egui::Vec2::splat(theme::ICON),
+                );
+                Icon::Search.image(theme::ICON, p.ink_muted).paint_at(ui, icon_rect);
                 if let Some(id) = &folder {
                     let on = scope.is_some();
                     let tip = if on {
@@ -1395,7 +1413,7 @@ impl App {
                     } else {
                         format!("Only search “{}” and its subfolders (Ctrl+Shift+F)", self.folder_name(id))
                     };
-                    if ui.add(Button::secondary("📁 This folder").selected(on)).on_hover_text(tip).clicked() {
+                    if ui.add(Button::secondary("This folder").icon(Icon::Folder).selected(on)).on_hover_text(tip).clicked() {
                         self.toggle_scope();
                     }
                 }
@@ -1415,16 +1433,16 @@ impl App {
                     }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(Button::primary("⬆ Upload")).on_hover_text("Upload files (Ctrl+U) — or drop files on the window").clicked() {
+                    if ui.add(Button::primary("Upload").icon(Icon::Upload)).on_hover_text("Upload files (Ctrl+U) — or drop files on the window").clicked() {
                         actions.push(Action::Upload);
                     }
-                    if ui.add(Button::secondary("➕ Folder")).on_hover_text("New folder (Ctrl+Shift+N)").clicked() {
+                    if ui.add(Button::secondary("New folder").icon(Icon::FolderPlus)).on_hover_text("New folder (Ctrl+Shift+N)").clicked() {
                         actions.push(Action::NewFolder);
                     }
                     let syncing = matches!(self.sync, SyncState::Initial { .. } | SyncState::Incremental);
                     if syncing {
                         ui.add_sized([theme::CONTROL_H, theme::CONTROL_H], egui::Spinner::new().size(theme::ICON).color(p.ink_muted));
-                    } else if ui.add(Button::ghost("⟳")).on_hover_text("Sync now (F5)").clicked() {
+                    } else if ui.add(Button::toolbar(Icon::RefreshCw)).on_hover_text("Sync now (F5)").clicked() {
                         self.backend.sync_now();
                     }
                 });
@@ -1441,7 +1459,7 @@ impl App {
                     ui.label(RichText::new(format!("{n} result{}", if n == 1 { "" } else { "s" })).font(theme::semibold_font(theme::FONT_UI_ROW)));
                     if let Some(id) = self.search_scope() {
                         ui.label(format!("in “{}”", self.folder_name(&id)));
-                        if ui.add(Button::ghost("✖ search everywhere")).clicked() {
+                        if ui.add(Button::ghost("Search everywhere").icon(Icon::X)).clicked() {
                             self.toggle_scope();
                         }
                     }
@@ -1591,7 +1609,8 @@ impl App {
                         note(ui, format!("{} selected", self.selected.len()));
                     }
                     if !self.cut.is_empty() {
-                        note(ui, format!("✂ {} to move", self.cut.len()));
+                        note(ui, format!("{} to move", self.cut.len()));
+                        ui.add(Icon::Scissors.image(theme::ICON, p.ink_muted));
                     }
                 });
             });
@@ -1637,6 +1656,8 @@ impl App {
                     ui.add(egui::Spinner::new().color(p.ink_muted));
                     ui.label(RichText::new("Building local index…").weak());
                 } else {
+                    brand::mark(ui, 32.0);
+                    ui.add_space(theme::SPACE_2);
                     ui.label(RichText::new("Empty").weak());
                 }
             });
@@ -1735,7 +1756,7 @@ impl App {
                             };
                             row.col(|ui| {
                                 row_bg(ui, false, false);
-                                ui.label(RichText::new(Kind::Other.icon()).color(p.ink_muted));
+                                ui.add(Icon::File.image(theme::ICON, p.ink_muted));
                                 ui.add(egui::Label::new(RichText::new(&info.name).color(p.ink)).truncate());
                             });
                             if show_location {
@@ -1770,11 +1791,11 @@ impl App {
                             if let Some((i, err)) = failed {
                                 row.response().on_hover_text(err).context_menu(|ui| {
                                     ui.set_min_width(200.0);
-                                    if ui.button("Retry upload").clicked() {
+                                    if ui.add(egui::Button::image_and_text(Icon::RefreshCw.image(theme::ICON, p.ink_muted), "Retry upload")).clicked() {
                                         actions.push(Action::RetryUpload(i));
                                         ui.close();
                                     }
-                                    if ui.button("Dismiss").clicked() {
+                                    if ui.add(egui::Button::image_and_text(Icon::X.image(theme::ICON, p.ink_muted), "Dismiss")).clicked() {
                                         actions.push(Action::DismissFailed(i));
                                         ui.close();
                                     }
@@ -1794,26 +1815,27 @@ impl App {
                         row.col(|ui| {
                             row_bg(ui, selected, drop_here);
                             let icon_color = if e.kind == Kind::Folder { p.brand } else if selected { p.ink } else { p.ink_muted };
-                            ui.label(RichText::new(e.kind.icon()).color(icon_color));
+                            ui.add(Icon::for_kind(e.kind).image(theme::ICON, icon_color));
                             let mut name = RichText::new(&f.name).color(p.ink);
                             if self.cut.iter().any(|(id, _)| *id == f.id) {
                                 name = name.italics().color(p.ink_muted);
                             }
                             ui.add(egui::Label::new(name).truncate());
+                            let badge = if selected { p.ink } else { p.ink_muted };
                             if f.starred {
-                                ui.label(RichText::new("★").color(p.ink_muted));
+                                ui.add(Icon::Star.image(theme::ICON, badge)).on_hover_text("Starred");
                             }
                             if f.shared {
-                                ui.label(RichText::new("👥").color(p.ink_muted));
+                                ui.add(Icon::Users.image(theme::ICON, badge)).on_hover_text("Shared");
                             }
                             if let Some(lc) = self.local.get(&f.id) {
                                 if lc.outdated(f) {
-                                    ui.label(RichText::new("💾").color(p.warning)).on_hover_text(format!(
+                                    ui.add(Icon::HardDriveDownload.image(theme::ICON, p.warning)).on_hover_text(format!(
                                         "Downloaded to {}\nDrive has a newer version (Ctrl+S to update)",
                                         lc.path.display()
                                     ));
                                 } else {
-                                    ui.label(RichText::new("💾").color(p.success))
+                                    ui.add(Icon::HardDriveDownload.image(theme::ICON, p.success))
                                         .on_hover_text(format!("Downloaded to {}\nDouble-click opens it", lc.path.display()));
                                 }
                             }
@@ -1879,54 +1901,60 @@ impl App {
                         let has_local = self.local.get(&f.id).is_some_and(|l| l.path.exists());
                         resp.context_menu(|ui| {
                             ui.set_min_width(240.0);
-                            let mut item = |ui: &mut egui::Ui, label: RichText, hint: &str, a: Action| {
-                                let b = egui::Button::new(label).shortcut_text(widgets::mono_small(hint).color(p.ink_muted));
+                            let mut item = |ui: &mut egui::Ui, icon: Icon, label: RichText, hint: &str, a: Action| {
+                                let tint = match icon {
+                                    Icon::Folder | Icon::FolderOpen => p.brand,
+                                    Icon::Trash2 if !in_trash => p.danger,
+                                    _ => p.ink_muted,
+                                };
+                                let b = egui::Button::image_and_text(icon.image(theme::ICON, tint), label)
+                                    .shortcut_text(widgets::mono_small(hint).color(p.ink_muted));
                                 if ui.add(b).clicked() {
                                     actions.push(a);
                                     ui.close();
                                 }
                             };
-                            let open_label = if is_folder {
-                                "📂 Open"
+                            let (open_icon, open_label) = if is_folder {
+                                (Icon::FolderOpen, "Open")
                             } else if has_local {
-                                "↗ Open local copy"
+                                (Icon::ExternalLink, "Open local copy")
                             } else {
-                                "↗ Open"
+                                (Icon::ExternalLink, "Open")
                             };
                             let t = |s: &str| RichText::new(s).color(p.ink);
-                            item(ui, t(open_label), "Enter", Action::Open(f.id.clone()));
-                            item(ui, t("🌐 Open in browser"), "Ctrl+O", Action::OpenInBrowser);
+                            item(ui, open_icon, t(open_label), "Enter", Action::Open(f.id.clone()));
+                            item(ui, Icon::Globe, t("Open in browser"), "Ctrl+O", Action::OpenInBrowser);
                             if has_local {
-                                item(ui, t("🗁 Show local file"), "", Action::ShowLocal(f.id.clone()));
+                                item(ui, Icon::HardDriveDownload, t("Show local file"), "", Action::ShowLocal(f.id.clone()));
                             }
                             if show_location {
-                                item(ui, t("📍 Show in folder"), "Ctrl+Enter", Action::Reveal(f.id.clone()));
+                                item(ui, Icon::MapPin, t("Show in folder"), "Ctrl+Enter", Action::Reveal(f.id.clone()));
                             }
                             ui.separator();
-                            item(ui, t("🔗 Copy link"), "Ctrl+C", Action::CopyLink);
+                            item(ui, Icon::Link, t("Copy link"), "Ctrl+C", Action::CopyLink);
                             if !is_folder && !f.is_google_native() {
-                                item(ui, t("⬇ Copy direct download link"), "Ctrl+Shift+D", Action::CopyDownloadLink);
+                                item(ui, Icon::Download, t("Copy direct download link"), "Ctrl+Shift+D", Action::CopyDownloadLink);
                             }
-                            item(ui, t("🌍 Share: anyone with link + copy"), "Ctrl+Shift+S", Action::Share);
-                            item(ui, t("Copy name"), "", Action::CopyName);
-                            item(ui, t("Copy ID"), "", Action::CopyId);
+                            item(ui, Icon::Share2, t("Share: anyone with link + copy"), "Ctrl+Shift+S", Action::Share);
+                            item(ui, Icon::Type, t("Copy name"), "", Action::CopyName);
+                            item(ui, Icon::Hash, t("Copy ID"), "", Action::CopyId);
                             ui.separator();
                             if !is_folder {
-                                item(ui, t(if has_local { "💾 Update local copy" } else { "💾 Download" }), "Ctrl+S", Action::Download);
+                                item(ui, Icon::Download, t(if has_local { "Update local copy" } else { "Download" }), "Ctrl+S", Action::Download);
                             }
                             if has_local {
-                                item(ui, t("Forget local copy"), "", Action::ForgetLocal(f.id.clone()));
+                                item(ui, Icon::X, t("Forget local copy"), "", Action::ForgetLocal(f.id.clone()));
                             }
-                            item(ui, t("✏ Rename"), "F2", Action::Rename);
-                            item(ui, t(if f.starred { "☆ Unstar" } else { "★ Star" }), "", Action::Star(!f.starred));
-                            item(ui, t("✂ Cut (move)"), "Ctrl+X", Action::Cut);
+                            item(ui, Icon::Pencil, t("Rename"), "F2", Action::Rename);
+                            item(ui, if f.starred { Icon::StarOff } else { Icon::Star }, t(if f.starred { "Unstar" } else { "Star" }), "", Action::Star(!f.starred));
+                            item(ui, Icon::Scissors, t("Cut (move)"), "Ctrl+X", Action::Cut);
                             if let Some(t2) = f.folder_target() {
-                                item(ui, t("📌 Open this folder at startup"), "", Action::SetStartFolder(t2.to_string()));
+                                item(ui, Icon::Pin, t("Open this folder at startup"), "", Action::SetStartFolder(t2.to_string()));
                             }
                             if in_trash {
-                                item(ui, t("♻ Restore"), "Del", Action::Trash(false));
+                                item(ui, Icon::RotateCcw, t("Restore"), "Del", Action::Trash(false));
                             } else {
-                                item(ui, RichText::new("🗑 Move to trash").color(p.danger), "Del", Action::Trash(true));
+                                item(ui, Icon::Trash2, RichText::new("Move to trash").color(p.danger), "Del", Action::Trash(true));
                             }
                         });
                     });
@@ -2019,6 +2047,8 @@ impl App {
             let r = Self::modal(ctx, "about").show(ctx, |ui| {
                 ui.set_width(360.0);
                 ui.vertical_centered(|ui| {
+                    brand::mark(ui, 48.0);
+                    ui.add_space(theme::SPACE_2);
                     ui.heading("Dray");
                     ui.horizontal(|ui| {
                         // Centre the version line.
@@ -2037,7 +2067,7 @@ impl App {
                             .weak(),
                     );
                     ui.add_space(theme::SPACE_4);
-                    ui.label(RichText::new("Monospace type: JetBrains Mono (OFL 1.1).").small().weak());
+                    ui.label(RichText::new("Monospace type: JetBrains Mono (OFL 1.1). Icons: Lucide (ISC).").small().weak());
                     ui.add_space(theme::SPACE_6);
                     if ui.add(Button::secondary("Close")).clicked() {
                         close = true;
@@ -2060,7 +2090,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.heading("Settings");
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(Button::ghost("✕")).on_hover_text("Close").clicked() {
+                        if ui.add(Button::toolbar(Icon::X)).on_hover_text("Close").clicked() {
                             open = false;
                         }
                     });
@@ -2309,7 +2339,7 @@ impl App {
                 }
             }
             let text = match &target {
-                Some((_, name)) => format!("⬆  Drop to upload into “{name}”"),
+                Some((_, name)) => format!("Drop to upload into “{name}”"),
                 None => "Still syncing — can't upload yet".into(),
             };
             let galley = painter.layout_no_wrap(text, theme::semibold_font(theme::FONT_UI_TITLE), p.on_brand);

@@ -3,9 +3,11 @@
 mod app;
 mod auth;
 mod backend;
+mod brand;
 mod cache;
 mod config;
 mod drive;
+mod icons;
 mod index;
 mod model;
 mod pointer;
@@ -25,7 +27,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([640.0, 400.0])
             .with_drag_and_drop(true)
             .with_icon(
-                eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icon-256.png"))
+                eframe::icon_data::from_png_bytes(include_bytes!("../brand/logo/png/app-icon-256.png"))
                     .expect("bundled icon is a valid PNG"),
             ),
         event_loop_builder: linux_backend_hook(),

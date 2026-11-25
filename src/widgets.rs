@@ -2,10 +2,11 @@
 //! sidebar items, key hints, list-row backgrounds and the keyboard focus ring. They only
 //! draw and report clicks; all behavior stays in `app.rs`.
 
+use crate::icons::Icon;
 use crate::theme::{self, Palette};
 use eframe::egui::{
     self, Color32, Id, Painter, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextStyle, TextWrapMode,
-    Ui, Widget, WidgetText, pos2, vec2,
+    Ui, Vec2, Widget, WidgetText, pos2, vec2,
 };
 
 fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -42,12 +43,14 @@ pub enum Variant {
 pub struct Button {
     variant: Variant,
     text: WidgetText,
+    icon: Option<Icon>,
+    icon_size: f32,
     selected: bool,
 }
 
 impl Button {
     pub fn new(variant: Variant, text: impl Into<WidgetText>) -> Self {
-        Button { variant, text: text.into(), selected: false }
+        Button { variant, text: text.into(), icon: None, icon_size: theme::ICON, selected: false }
     }
     pub fn primary(text: impl Into<WidgetText>) -> Self {
         Self::new(Variant::Primary, text)
@@ -61,6 +64,15 @@ impl Button {
     pub fn danger(text: impl Into<WidgetText>) -> Self {
         Self::new(Variant::Danger, text)
     }
+    /// Icon before the label (or alone, for an empty label).
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+    /// Icon-only toolbar button with a 20 px icon.
+    pub fn toolbar(icon: Icon) -> Self {
+        Button { icon_size: theme::ICON_TOOLBAR, ..Self::ghost("").icon(icon) }
+    }
     /// Toggle buttons: selected state uses the selection tint.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
@@ -73,9 +85,16 @@ impl Widget for Button {
         let p = theme::of(ui);
         let galley = self.text.into_galley(ui, Some(TextWrapMode::Extend), f32::INFINITY, TextStyle::Button);
         let pad = theme::SPACE_3;
-        let width = (galley.size().x + 2.0 * pad).max(theme::CONTROL_H);
+        let has_text = !galley.is_empty();
+        let icon_w = match (self.icon, has_text) {
+            (Some(_), true) => self.icon_size + theme::SPACE_1,
+            (Some(_), false) => self.icon_size,
+            (None, _) => 0.0,
+        };
+        let width = if has_text { galley.size().x + icon_w + 2.0 * pad } else { theme::CONTROL_H }.max(theme::CONTROL_H);
+        let label = if has_text { galley.text().to_string() } else { self.icon.map(|i| format!("{i:?}")).unwrap_or_default() };
         let (rect, resp) = ui.allocate_exact_size(vec2(width, theme::CONTROL_H), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), galley.text()));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label));
         if ui.is_rect_visible(rect) {
             let t = hover_t(ui, &resp);
             let (fill, stroke, text) = match self.variant {
@@ -90,10 +109,24 @@ impl Widget for Button {
                 }
                 Variant::Danger => (lerp(p.surface_raised, p.surface_sunken, t), Stroke::new(1.0, p.danger), p.danger),
             };
-            let painter = ui.painter();
-            painter.rect(rect, theme::radius(theme::RADIUS_MD), fill, stroke, StrokeKind::Inside);
-            let pos = rect.center() - galley.size() / 2.0;
-            painter.galley(pos, galley, text);
+            ui.painter().rect(rect, theme::radius(theme::RADIUS_MD), fill, stroke, StrokeKind::Inside);
+            let content_w = galley.size().x + icon_w;
+            let mut x = rect.center().x - content_w / 2.0;
+            if let Some(icon) = self.icon {
+                // Icons are ink-muted at rest and ink when hot or selected; the folder icon is
+                // always brand; on a brand fill they take the text color.
+                let tint = match self.variant {
+                    Variant::Primary | Variant::Danger => text,
+                    _ if icon == Icon::Folder => p.brand,
+                    _ if self.selected => p.ink,
+                    _ => lerp(p.ink_muted, p.ink, t),
+                };
+                let r = Rect::from_min_size(pos2(x, rect.center().y - self.icon_size / 2.0), Vec2::splat(self.icon_size));
+                icon.image(self.icon_size, tint).paint_at(ui, r);
+                x += icon_w;
+            }
+            let pos = pos2(x, rect.center().y - galley.size().y / 2.0);
+            ui.painter().galley(pos, galley, text);
         }
         resp
     }
@@ -251,7 +284,7 @@ pub fn key_hint(ui: &mut Ui, keys: &str) -> Response {
 
 /// Sidebar entry: full-width `radius-md` row. Hover is a lighter well on the sunken
 /// sidebar, selection is brand-subtle with ink text and no accent bar.
-pub fn nav_item(ui: &mut Ui, label: &str, selected: bool, drop_target: bool) -> Response {
+pub fn nav_item(ui: &mut Ui, icon: Icon, label: &str, selected: bool, drop_target: bool) -> Response {
     let p = theme::of(ui);
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(width, theme::ROW_COMPACT), Sense::click());
@@ -262,9 +295,13 @@ pub fn nav_item(ui: &mut Ui, label: &str, selected: bool, drop_target: bool) -> 
         let fill = if selected || drop_target { rest } else { lerp(rest, p.surface, t) };
         let stroke = if drop_target { Stroke::new(2.0, p.brand) } else { Stroke::NONE };
         ui.painter().rect(rect, theme::radius(theme::RADIUS_MD), fill, stroke, StrokeKind::Inside);
+        let icon_rect = Rect::from_min_size(pos2(rect.left() + theme::SPACE_2, rect.center().y - theme::ICON / 2.0), Vec2::splat(theme::ICON));
+        let tint = if selected { p.ink } else { p.ink_muted };
+        icon.image(theme::ICON, tint).paint_at(ui, icon_rect);
+        let text_left = icon_rect.right() + theme::SPACE_2;
         let font = theme::ui_font(theme::FONT_UI_ROW);
-        let galley = ui.painter().layout(label.to_string(), font, p.ink, rect.width() - 2.0 * theme::SPACE_2);
-        let pos = pos2(rect.left() + theme::SPACE_2, rect.center().y - galley.size().y / 2.0);
+        let galley = ui.painter().layout(label.to_string(), font, p.ink, rect.right() - text_left - theme::SPACE_2);
+        let pos = pos2(text_left, rect.center().y - galley.size().y / 2.0);
         ui.painter().with_clip_rect(rect).galley(pos, galley, p.ink);
     }
     resp

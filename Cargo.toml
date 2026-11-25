@@ -10,7 +10,7 @@ base64 = "0.23.1"
 chrono = "0.4.45"
 directories = "6.0.0"
 eframe = "0.37.0"
-egui_extras = "0.37.0"
+egui_extras = { version = "0.37.0", features = ["svg"] }
 getrandom = "0.4.3"
 open = "5.4.5"
 raw-window-handle = "0.6"

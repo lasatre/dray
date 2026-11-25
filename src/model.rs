@@ -169,26 +169,6 @@ impl Kind {
         }
     }
 
-    pub fn icon(self) -> &'static str {
-        match self {
-            Kind::Folder => "📁",
-            Kind::Shortcut => "⤴",
-            Kind::Doc => "📝",
-            Kind::Sheet => "📊",
-            Kind::Slides => "📽",
-            Kind::Form => "☑",
-            Kind::Drawing => "✏",
-            Kind::Pdf => "📕",
-            Kind::Image => "🖼",
-            Kind::Video => "🎞",
-            Kind::Audio => "🎵",
-            Kind::Archive => "📦",
-            Kind::Code => "⌨",
-            Kind::Text => "🗒",
-            Kind::Other => "📄",
-        }
-    }
-
     /// Parse a `type:` search filter value.
     pub fn parse_filter(s: &str) -> Option<Kind> {
         Some(match s {

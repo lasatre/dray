@@ -13,8 +13,12 @@ APPDIR="target/AppDir"
 rm -rf "$APPDIR"
 install -Dm755 target/release/dray "$APPDIR/usr/bin/dray"
 install -Dm644 packaging/dray.desktop "$APPDIR/usr/share/applications/dray.desktop"
-install -Dm644 packaging/dray.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/dray.svg"
-cp packaging/dray.desktop packaging/dray.svg "$APPDIR/"
+install -Dm644 brand/logo/app-icon.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/dray.svg"
+for size in 16 32 48 64 128 256 512; do
+  install -Dm644 "brand/logo/png/app-icon-$size.png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/dray.png"
+done
+cp packaging/dray.desktop "$APPDIR/"
+cp brand/logo/app-icon.svg "$APPDIR/dray.svg"
 ln -sf dray.svg "$APPDIR/.DirIcon"
 cat > "$APPDIR/AppRun" <<'RUN'
 #!/bin/sh

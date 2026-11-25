@@ -1,4 +1,4 @@
-<img src="packaging/dray.svg" width="72" height="72" alt="">
+<img src="brand/logo/app-icon.svg" width="72" height="72" alt="">
 
 # Dray
 

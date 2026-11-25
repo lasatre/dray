@@ -409,10 +409,10 @@ pub fn focus_ring(ctx: &egui::Context, keyboard: bool) {
 #[cfg(test)]
 mod tests {
     use super::numbers_job;
-    use eframe::egui::{Color32, FontFamily, FontId};
+    use eframe::egui::{FontFamily, FontId};
 
     fn mono_parts(text: &str) -> Vec<String> {
-        let job = numbers_job(text, FontId::proportional(13.0), Color32::BLACK);
+        let job = numbers_job(text, FontId::proportional(13.0), crate::theme::LIGHT.ink);
         job.sections
             .iter()
             .filter(|s| s.format.font_id.family == FontFamily::Monospace)

@@ -55,7 +55,7 @@ pub struct Drive {
 impl Drive {
     pub fn new(http: Client, auth: Arc<Auth>) -> Drive {
         let upload_http = Client::builder()
-            .user_agent("gdriveoperator/0.1")
+            .user_agent("dray/0.1")
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .build()

@@ -11,17 +11,17 @@ export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
 cargo build --release --locked --target "$TARGET"
 
-OUT="target/GDriveOperator-$VERSION-windows-x64"
+OUT="target/Dray-$VERSION-windows-x64"
 rm -rf "$OUT"
 mkdir -p "$OUT" dist
-cp "target/$TARGET/release/gdriveoperator.exe" "$OUT/GDriveOperator.exe"
+cp "target/$TARGET/release/dray.exe" "$OUT/Dray.exe"
 cp README.md "$OUT/"
 [ -f LICENSE ] && cp LICENSE "$OUT/"
 
 # Sanity check: list DLL imports; anything beyond system DLLs would need shipping too.
 if command -v x86_64-w64-mingw32-objdump >/dev/null; then
   echo "DLL imports:"
-  x86_64-w64-mingw32-objdump -p "$OUT/GDriveOperator.exe" | grep 'DLL Name' | sort -u
+  x86_64-w64-mingw32-objdump -p "$OUT/Dray.exe" | grep 'DLL Name' | sort -u
 fi
 
 rm -f "dist/$(basename "$OUT").zip"

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=GDrive Operator
-Comment=Fast local front-end for Google Drive
-Exec=gdriveoperator
-Icon=gdriveoperator
-Categories=Utility;Network;FileTools;
-Terminal=false
-StartupWMClass=gdriveoperator

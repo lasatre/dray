@@ -11,15 +11,15 @@ cargo build --release --locked
 
 APPDIR="target/AppDir"
 rm -rf "$APPDIR"
-install -Dm755 target/release/gdriveoperator "$APPDIR/usr/bin/gdriveoperator"
-install -Dm644 packaging/gdriveoperator.desktop "$APPDIR/usr/share/applications/gdriveoperator.desktop"
-install -Dm644 packaging/gdriveoperator.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/gdriveoperator.svg"
-cp packaging/gdriveoperator.desktop packaging/gdriveoperator.svg "$APPDIR/"
-ln -sf gdriveoperator.svg "$APPDIR/.DirIcon"
+install -Dm755 target/release/dray "$APPDIR/usr/bin/dray"
+install -Dm644 packaging/dray.desktop "$APPDIR/usr/share/applications/dray.desktop"
+install -Dm644 packaging/dray.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/dray.svg"
+cp packaging/dray.desktop packaging/dray.svg "$APPDIR/"
+ln -sf dray.svg "$APPDIR/.DirIcon"
 cat > "$APPDIR/AppRun" <<'RUN'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/usr/bin/gdriveoperator" "$@"
+exec "$HERE/usr/bin/dray" "$@"
 RUN
 chmod +x "$APPDIR/AppRun"
 
@@ -35,5 +35,5 @@ mkdir -p dist
 # Extract-and-run: CI containers have no FUSE.
 # Absolute paths: in extract-and-run mode appimagetool mis-resolves relative ones.
 APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$ROOT/$TOOL" --no-appstream "$ROOT/$APPDIR" \
-  "$ROOT/dist/GDriveOperator-$VERSION-$ARCH.AppImage"
+  "$ROOT/dist/Dray-$VERSION-$ARCH.AppImage"
 ls -la dist

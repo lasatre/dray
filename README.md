@@ -1,6 +1,6 @@
-<img src="packaging/gdriveoperator.svg" width="72" height="72" alt="">
+<img src="packaging/dray.svg" width="72" height="72" alt="">
 
-# GDrive Operator
+# Dray
 
 A fast native desktop front-end for Google Drive, written in Rust (egui).
 
@@ -45,16 +45,16 @@ copying one needs no network request.
 ```sh
 # needs a Rust toolchain (https://rustup.rs) and a C compiler (gcc/clang) for bundled SQLite
 cargo build --release
-./target/release/gdriveoperator
+./target/release/dray
 ```
 
 ### Packages (CI)
 
 `.forgejo/workflows/build.yml` runs on every push and PR. It builds:
 
-- `GDriveOperator-<version>-x86_64.AppImage`, built on Debian bookworm, so it runs on any
+- `Dray-<version>-x86_64.AppImage`, built on Debian bookworm, so it runs on any
   distro with glibc ≥ 2.36
-- `GDriveOperator-<version>-windows-x64.zip` (a standalone `GDriveOperator.exe` + README),
+- `Dray-<version>-windows-x64.zip` (a standalone `Dray.exe` + README),
   cross-compiled with mingw-w64; it has no DLL dependencies beyond Windows' own
 
 Both files are attached to the workflow run as artifacts. When you push a `v*` tag
@@ -77,7 +77,7 @@ Google requires each desktop app to have its own OAuth client. It's free and tak
    name and your email, and add yourself under **Test users**.
 3. Go to **Credentials → Create credentials → OAuth client ID → Application type: Desktop
    app**, and download the JSON.
-4. Start GDrive Operator. Drop the JSON on the window (or paste the client ID and secret),
+4. Start Dray. Drop the JSON on the window (or paste the client ID and secret),
    then click **Sign in with Google**.
 
 > **Tip:** while the consent screen is in *Testing* status, Google expires refresh tokens
@@ -114,7 +114,7 @@ Google requires each desktop app to have its own OAuth client. It's free and tak
 
 winit, the windowing library, doesn't support file drag-and-drop on native Wayland yet. So on
 Linux the app runs through XWayland whenever `DISPLAY` is set (KDE and GNOME scale XWayland
-apps crisply by default). `GDO_WAYLAND=1` forces native Wayland, but drag-and-drop upload
+apps crisply by default). `DRAY_WAYLAND=1` forces native Wayland, but drag-and-drop upload
 won't work there.
 
 `vendor/winit` is winit 0.30.13 with one small patch that reports the cursor position during an
@@ -122,15 +122,15 @@ XDND drag, so drops can target a specific folder. See `vendor/winit/PATCHED.md`.
 
 ## Where things are stored
 
-- `~/.config/gdriveoperator/`: `client.json` (OAuth client) and `token.json` (refresh
+- `~/.config/dray/`: `client.json` (OAuth client) and `token.json` (refresh
   token, mode 0600), plus `settings.json`
 - downloaded-file locations live in the cache database's `local_copies` table
-- `~/.local/share/gdriveoperator/cache.sqlite3`: metadata cache (Settings → Rebuild cache
+- `~/.local/share/dray/cache.sqlite3`: metadata cache (Settings → Rebuild cache
   wipes and re-lists it)
 
 ## Demo mode
 
-`GDO_DEMO=200000 ./target/release/gdriveoperator` starts without signing in, with 200k
+`DRAY_DEMO=200000 ./target/release/dray` starts without signing in, with 200k
 synthetic files. It's useful for trying out the UI and search speed.
 
 ## Layout

@@ -206,7 +206,7 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String>
         }
         let ok = error.is_none() && state.as_deref() == Some(expected_state);
         let body = if ok {
-            "<html><body style='font-family:sans-serif;padding:3em'><h2>Signed in to GDrive Operator</h2>You can close this tab.</body></html>"
+            "<html><body style='font-family:sans-serif;padding:3em'><h2>Signed in to Dray</h2>You can close this tab.</body></html>"
         } else {
             "<html><body style='font-family:sans-serif;padding:3em'><h2>Sign-in failed</h2>Return to the app and try again.</body></html>"
         };

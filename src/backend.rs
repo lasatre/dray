@@ -72,7 +72,7 @@ struct Inner {
 impl Backend {
     pub fn new(ctx: eframe::egui::Context, paths: Paths, poll_secs: u64) -> Result<(Backend, Receiver<Event>)> {
         let http = reqwest::blocking::Client::builder()
-            .user_agent("gdriveoperator/0.1 (gzip)")
+            .user_agent("dray/0.1 (gzip)")
             .gzip(true)
             .pool_max_idle_per_host(16)
             .connect_timeout(Duration::from_secs(15))

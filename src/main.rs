@@ -14,8 +14,8 @@ fn main() -> eframe::Result {
     let paths = config::Paths::new().expect("could not create config/data directories");
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("GDrive Operator")
-            .with_app_id("gdriveoperator")
+            .with_title("Dray")
+            .with_app_id("dray")
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([640.0, 400.0])
             .with_drag_and_drop(true)
@@ -27,17 +27,17 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "gdriveoperator",
+        "dray",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, paths)?))),
     )
 }
 
 /// winit has no file drag-and-drop on Wayland, so on Linux prefer X11 (XWayland) when it's
-/// available. `GDO_WAYLAND=1` forces native Wayland (crisper on fractional scaling, no drops).
+/// available. `DRAY_WAYLAND=1` forces native Wayland (crisper on fractional scaling, no drops).
 #[cfg(target_os = "linux")]
 fn linux_backend_hook() -> Option<eframe::EventLoopBuilderHook> {
-    let force_wayland = std::env::var_os("GDO_WAYLAND").is_some_and(|v| v != "0");
+    let force_wayland = std::env::var_os("DRAY_WAYLAND").is_some_and(|v| v != "0");
     if force_wayland || std::env::var_os("DISPLAY").is_none() {
         return None;
     }

@@ -211,7 +211,7 @@ impl App {
         let (ui_tx, ui_rx) = channel();
         let screen = if backend.has_session() { Screen::Main } else { Screen::Setup };
         let creds = ClientCreds::load(&paths).unwrap_or_default();
-        let demo = std::env::var_os("GDO_DEMO").is_some();
+        let demo = std::env::var_os("DRAY_DEMO").is_some();
         let screen = if demo { Screen::Main } else { screen };
         let start_view = settings.start_view.as_deref().and_then(View::from_setting).unwrap_or(View::MyDrive);
         let mut app = App {
@@ -274,11 +274,11 @@ impl App {
         Ok(app)
     }
 
-    /// `GDO_DEMO=1`: fill the index with synthetic files (UI / performance testing, no network).
+    /// `DRAY_DEMO=1`: fill the index with synthetic files (UI / performance testing, no network).
     fn load_demo(&mut self) {
         let words = ["Report", "Budget", "Photo", "Invoice", "Draft", "Final", "Meeting", "Notes", "Plan", "Design"];
         let exts = ["pdf", "docx", "xlsx", "png", "jpg", "mp4", "zip", "txt", "rs", "pptx"];
-        let n: u32 = std::env::var("GDO_DEMO").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 1).unwrap_or(50_000);
+        let n: u32 = std::env::var("DRAY_DEMO").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 1).unwrap_or(50_000);
         let files = Arc::make_mut(&mut self.files);
         for i in 0..n {
             let folder = i < n / 50;
@@ -308,10 +308,10 @@ impl App {
             files.insert(f.id.clone(), Arc::new(f));
         }
         self.my_drive = Some("root".into());
-        if let Ok(q) = std::env::var("GDO_DEMO_QUERY") {
+        if let Ok(q) = std::env::var("DRAY_DEMO_QUERY") {
             self.query = q;
         }
-        if let Ok(folder) = std::env::var("GDO_DEMO_FOLDER") {
+        if let Ok(folder) = std::env::var("DRAY_DEMO_FOLDER") {
             self.view = View::Folder(folder);
             self.scope_folder = true;
         }
@@ -1172,7 +1172,7 @@ impl App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(30.0);
-                ui.heading("GDrive Operator");
+                ui.heading("Dray");
                 ui.label("A fast local front-end for Google Drive");
                 ui.add_space(20.0);
             });

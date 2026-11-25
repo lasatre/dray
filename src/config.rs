@@ -8,14 +8,34 @@ pub struct Paths {
     pub data_dir: PathBuf,
 }
 
+/// Directory name used by pre-release builds, before the project was named Dray.
+const LEGACY_DIR_NAME: &str = "gdriveoperator";
+
 impl Paths {
     pub fn new() -> Result<Paths> {
-        let dirs = directories::ProjectDirs::from("", "", "gdriveoperator")
+        let dirs = directories::ProjectDirs::from("", "", "dray")
             .ok_or_else(|| anyhow!("could not determine home directory"))?;
         let p = Paths {
             config_dir: dirs.config_dir().to_path_buf(),
             data_dir: dirs.data_local_dir().to_path_buf(),
         };
+        if let Some(old) = directories::ProjectDirs::from("", "", LEGACY_DIR_NAME) {
+            let mut log = Vec::new();
+            for (from, to) in [(old.config_dir(), &p.config_dir), (old.data_local_dir(), &p.data_dir)] {
+                match migrate_dir(from, to) {
+                    Ok(0) => {}
+                    Ok(n) => log.push(format!("copied {n} file(s) from {} to {}", from.display(), to.display())),
+                    Err(e) => log.push(format!("could not copy {} to {}: {e:#}", from.display(), to.display())),
+                }
+            }
+            if !log.is_empty() {
+                std::fs::create_dir_all(&p.config_dir)?;
+                let mut text = log.join("\n");
+                text.push_str("\nThe old directories were left in place; delete them once Dray works.\n");
+                eprintln!("dray: settings migration\n{text}");
+                let _ = std::fs::write(p.config_dir.join("migration.log"), text);
+            }
+        }
         std::fs::create_dir_all(&p.config_dir)?;
         std::fs::create_dir_all(&p.data_dir)?;
         Ok(p)
@@ -106,6 +126,39 @@ impl Settings {
     }
 }
 
+/// One-time migration from the legacy directory: if `to` doesn't exist yet (or is empty) and
+/// `from` does, copy everything from `from` into `to`, keeping file permissions (the token
+/// file stays private). `from` is never modified. Returns how many files were copied.
+fn migrate_dir(from: &Path, to: &Path) -> Result<usize> {
+    if from == to || !from.is_dir() {
+        return Ok(0);
+    }
+    if to.read_dir().is_ok_and(|mut d| d.next().is_some()) {
+        return Ok(0);
+    }
+    fn copy_tree(from: &Path, to: &Path, n: &mut usize) -> Result<()> {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let dest = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                // On macOS config and data share a directory; don't recurse into ourselves.
+                if entry.path() != to {
+                    copy_tree(&entry.path(), &dest, n)?;
+                }
+            } else {
+                std::fs::copy(entry.path(), &dest)
+                    .with_context(|| format!("copying {}", entry.path().display()))?;
+                *n += 1;
+            }
+        }
+        Ok(())
+    }
+    let mut n = 0;
+    copy_tree(from, to, &mut n)?;
+    Ok(n)
+}
+
 /// Write a file readable only by the current user (tokens / secrets).
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
@@ -124,4 +177,34 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::migrate_dir;
+    use std::fs;
+
+    #[test]
+    fn migrates_legacy_dir_once_and_keeps_the_old_one() {
+        let root = std::env::temp_dir().join(format!("dray-migrate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (old, new) = (root.join("old"), root.join("new"));
+        fs::create_dir_all(old.join("sub")).unwrap();
+        fs::write(old.join("token.json"), "t").unwrap();
+        fs::write(old.join("sub/cache.sqlite3"), "c").unwrap();
+
+        assert_eq!(migrate_dir(&old, &new).unwrap(), 2);
+        assert_eq!(fs::read_to_string(new.join("token.json")).unwrap(), "t");
+        assert_eq!(fs::read_to_string(new.join("sub/cache.sqlite3")).unwrap(), "c");
+        assert!(old.join("token.json").exists(), "old directory must be left alone");
+
+        // Second launch: the new directory already has data, so nothing is copied again.
+        fs::write(old.join("token.json"), "changed").unwrap();
+        assert_eq!(migrate_dir(&old, &new).unwrap(), 0);
+        assert_eq!(fs::read_to_string(new.join("token.json")).unwrap(), "t");
+
+        // Nothing to migrate from.
+        assert_eq!(migrate_dir(&root.join("missing"), &root.join("x")).unwrap(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
 }

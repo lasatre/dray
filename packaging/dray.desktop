@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Dray
+Comment=Fast, native desktop client for Google Drive
+Exec=dray
+Icon=dray
+Categories=Utility;Network;FileTools;
+Terminal=false
+StartupWMClass=dray

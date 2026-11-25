@@ -1,5 +1,6 @@
 [package]
-name = "gdriveoperator"
+name = "dray"
+description = "A fast, native desktop client for Google Drive"
 version = "0.1.0"
 edition = "2024"
 

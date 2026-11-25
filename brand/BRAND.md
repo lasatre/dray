@@ -32,7 +32,7 @@ Examples: "Synced 1,204 files in 3.1 s." / "Offline. Changes will upload when yo
 
 - The app's interface uses the system UI font (the `ui` family, styles `ui-title`, `ui-row`, `ui-label`, `ui-small`). A native app looks native.
 - Schibsted Grotesk (`sans`) is for the name, the website, docs and README art: `display-xl`, `display`, `title`, `body`, `small`. Hosted by Google Fonts; no font files are bundled.
-- JetBrains Mono (`mono`, `mono-small`) is for sizes, dates, paths, shortcuts, logs and the CLI. Use it for any value a person might copy.
+- JetBrains Mono (`mono`, `mono-small`) is for sizes, dates, paths, shortcuts, logs and the CLI. Use it for any value a person might copy. The app bundles JetBrains Mono Regular (OFL 1.1, `assets/fonts/`).
 - Interface text sits between 12 and 15 px. File names are `ui-row`, 13 px.
 
 ## Space, shape and depth
@@ -49,7 +49,7 @@ Examples: "Synced 1,204 files in 3.1 s." / "Offline. Changes will upload when yo
 
 ## Iconography
 
-- No icon set was supplied. Proposed: Lucide (ISC license), not bundled. Use 16 px icons (20 px in the toolbar), 1.5 px stroke, round caps and joins, `ink-muted` at rest and `ink` when selected. Swap the set if you adopt another.
+- Icons are Lucide (ISC license), bundled as SVGs in `assets/icons/`. Use 16 px icons (20 px in the toolbar), 1.5 px stroke, round caps and joins, `ink-muted` at rest and `ink` when selected.
 - The folder icon is the only icon colored `brand`. File types are told apart by shape and label, not by hue.
 - No emoji, and no Google Drive file-type icons.
 

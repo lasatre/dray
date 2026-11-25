@@ -12,7 +12,10 @@ mod pointer;
 mod theme;
 
 fn main() -> eframe::Result {
-    let paths = config::Paths::new().expect("could not create config/data directories");
+    // DRAY_DEMO=<n>: synthetic files in a throwaway profile (no sign-in, no network).
+    let demo = std::env::var_os("DRAY_DEMO").is_some();
+    let paths = if demo { config::Paths::demo() } else { config::Paths::new() }
+        .expect("could not create config/data directories");
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Dray")

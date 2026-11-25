@@ -12,6 +12,13 @@ pub struct Paths {
 const LEGACY_DIR_NAME: &str = "gdriveoperator";
 
 impl Paths {
+    /// A throwaway profile for demo mode, so it never reads or writes the real one.
+    pub fn demo() -> Result<Paths> {
+        let dir = std::env::temp_dir().join("dray-demo");
+        std::fs::create_dir_all(&dir)?;
+        Ok(Paths { config_dir: dir.clone(), data_dir: dir })
+    }
+
     pub fn new() -> Result<Paths> {
         let dirs = directories::ProjectDirs::from("", "", "dray")
             .ok_or_else(|| anyhow!("could not determine home directory"))?;

@@ -170,6 +170,12 @@ request, and publishes them as a GitHub release for `v*` tags.
 | `packaging/` | Release scripts, desktop entry and Windows icon |
 | `vendor/winit/` | winit 0.30.13 with a small patch for drag-and-drop targets on X11 (see `PATCHED.md`) |
 
+## License
+
+Dray is released under the [MIT License](LICENSE). Bundled third-party files keep their own
+licenses: JetBrains Mono (SIL Open Font License 1.1), Lucide icons (ISC) and the patched winit in
+`vendor/winit/` (Apache 2.0).
+
 ## Credits
 
 Monospace type is [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (SIL Open Font License

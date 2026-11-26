@@ -159,7 +159,8 @@ profile, without signing in, which is handy for trying the interface.
 
 The packaging scripts build the release files: `packaging/build-appimage.sh` for the AppImage
 and `packaging/build-windows.sh` for the Windows zip (cross-compiled with mingw-w64).
-`.forgejo/workflows/build.yml` runs both on every push and publishes them for `v*` tags.
+The GitHub Actions workflow `.github/workflows/build.yml` runs both on every push and pull
+request, and publishes them as a GitHub release for `v*` tags.
 
 | Path | Contents |
 |---|---|

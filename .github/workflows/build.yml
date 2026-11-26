@@ -1,8 +1,6 @@
 # Builds a Linux AppImage and a Windows zip.
-# - Every push / PR: artifacts are attached to the workflow run.
-# - Tags `v*`: the files are also published to a Forgejo release for that tag.
-#
-# Requires a Forgejo runner with the `docker` label (the default for forgejo-runner).
+# - Every push to main / PR: the files are attached to the workflow run as artifacts.
+# - Tags `v*`: the files are also published to a GitHub release for that tag.
 name: build
 
 on:
@@ -18,56 +16,56 @@ env:
 
 jobs:
   linux-appimage:
-    runs-on: docker
+    runs-on: ubuntu-latest
     container:
       # Debian bookworm (glibc 2.36): the AppImage runs on any distro at least this new.
-      image: node:20-bookworm
+      image: debian:bookworm
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential pkg-config file curl ca-certificates
+          apt-get install -y --no-install-recommends build-essential pkg-config file curl ca-certificates git
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      - uses: actions/checkout@v4
+
       - name: Set version
         run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then v="${GITHUB_REF_NAME#v}"; else v="$(git rev-parse --short HEAD)"; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then v="${GITHUB_REF_NAME#v}"; else v="$(echo "$GITHUB_SHA" | cut -c1-7)"; fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
 
       - name: Build AppImage
         run: packaging/build-appimage.sh
 
-      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
           path: dist/*.AppImage
 
   windows-zip:
-    runs-on: docker
+    runs-on: ubuntu-latest
     container:
-      image: node:20-bookworm
+      image: debian:bookworm
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zip curl ca-certificates
+          apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zip curl ca-certificates git
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target x86_64-pc-windows-gnu
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      - uses: actions/checkout@v4
+
       - name: Set version
         run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then v="${GITHUB_REF_NAME#v}"; else v="$(git rev-parse --short HEAD)"; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then v="${GITHUB_REF_NAME#v}"; else v="$(echo "$GITHUB_SHA" | cut -c1-7)"; fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
 
       - name: Build Windows zip
         run: packaging/build-windows.sh
 
-      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: windows-zip
           path: dist/*.zip
@@ -75,17 +73,16 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux-appimage, windows-zip]
-    runs-on: docker
-    container:
-      image: node:20-bookworm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: https://code.forgejo.org/forgejo/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: dist/release
           merge-multiple: true
 
-      - uses: https://code.forgejo.org/actions/forgejo-release@v2
-        with:
-          direction: upload
-          release-dir: dist/release
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/release/* --repo "$GITHUB_REPOSITORY" --title "Dray $GITHUB_REF_NAME" --generate-notes

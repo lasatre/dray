@@ -18,8 +18,9 @@ for size in 16 32 48 64 128 256 512; do
   install -Dm644 "brand/logo/png/app-icon-$size.png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/dray.png"
 done
 cp packaging/dray.desktop "$APPDIR/"
-cp brand/logo/app-icon.svg "$APPDIR/dray.svg"
-ln -sf dray.svg "$APPDIR/.DirIcon"
+# The top-level icon and .DirIcon must be PNGs (file managers can't be expected to read SVG).
+cp brand/logo/png/app-icon-256.png "$APPDIR/dray.png"
+ln -sf dray.png "$APPDIR/.DirIcon"
 cat > "$APPDIR/AppRun" <<'RUN'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"

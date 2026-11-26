@@ -4,6 +4,6 @@ Name=Dray
 Comment=Fast, native desktop client for Google Drive
 Exec=dray
 Icon=dray
-Categories=Utility;Network;FileTools;
+Categories=Network;FileTransfer;
 Terminal=false
 StartupWMClass=dray
